@@ -455,23 +455,17 @@ fn paint(
     // Indicateur de defilement: on ne regarde plus le bas de l'historique.
     let offset = session.display_offset();
     if offset > 0 {
-        let label = format!("historique -{offset}");
-        let pos = Pos2::new(rect.right() - 8.0, rect.top() + 6.0);
-        let text_rect = painter.text(
-            pos,
-            Align2::RIGHT_TOP,
-            &label,
-            FontId::new(font_size - 2.0, FontFamily::Proportional),
-            palette.background,
+        let font = FontId::new(font_size - 2.0, FontFamily::Proportional);
+        let galley =
+            painter.layout_no_wrap(format!("historique -{offset}"), font, palette.background);
+        let size = galley.size();
+        let origin = egui::pos2(rect.right() - size.x - 12.0, rect.top() + 6.0);
+        painter.rect_filled(
+            Rect::from_min_size(origin, size).expand(4.0),
+            CornerRadius::ZERO,
+            palette.cursor,
         );
-        painter.rect_filled(text_rect.expand(4.0), CornerRadius::ZERO, palette.cursor);
-        painter.text(
-            pos,
-            Align2::RIGHT_TOP,
-            &label,
-            FontId::new(font_size - 2.0, FontFamily::Proportional),
-            palette.background,
-        );
+        painter.galley(origin, galley, palette.background);
     }
 }
 

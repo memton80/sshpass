@@ -321,7 +321,7 @@ impl Config {
             .iter()
             .filter(|c| c.last_used.is_some())
             .collect();
-        used.sort_by(|a, b| b.last_used.cmp(&a.last_used));
+        used.sort_by_key(|c| std::cmp::Reverse(c.last_used));
         used.truncate(limit);
         used
     }

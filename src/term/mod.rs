@@ -122,7 +122,11 @@ impl TerminalSession {
         let options = tty::Options {
             shell: Some(tty::Shell::new(spec.program.clone(), spec.args.clone())),
             working_directory: spec.working_directory.clone(),
-            drain_on_exit: false,
+            // Indispensable: sans drainage, la sortie encore dans le tube est
+            // jetee a la sortie du processus. Un `ssh` qui echoue ecrit son
+            // message puis quitte aussitot — c'est precisement ce message que
+            // l'utilisateur a besoin de lire.
+            drain_on_exit: true,
             env: spec.env.clone(),
         };
         let window_size = WindowSize {
@@ -146,7 +150,8 @@ impl TerminalSession {
         let term = Term::new(config, &size, proxy.clone());
         let term = Arc::new(FairMutex::new(term));
 
-        let event_loop = EventLoop::new(Arc::clone(&term), proxy, pty, false, false)?;
+        let event_loop =
+            EventLoop::new(Arc::clone(&term), proxy, pty, options.drain_on_exit, false)?;
         let sender = event_loop.channel();
         let loop_handle = event_loop.spawn();
 

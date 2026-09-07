@@ -76,7 +76,11 @@ fn new_folder(app: &mut SshpassApp, ctx: &egui::Context) {
                     .hint_text("Production")
                     .desired_width(240.0),
             );
-            response.request_focus();
+            // Focus a l'ouverture seulement: le redemander a chaque frame
+            // empecherait la validation par Entree d'etre detectee.
+            if ui.memory(|m| m.focused()).is_none() {
+                response.request_focus();
+            }
             if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 create = true;
             }

@@ -63,13 +63,13 @@ fn strip(app: &mut SshpassApp, ui: &mut egui::Ui) {
                             app.actions.push(Action::ShowHome);
                         }
 
-                        let entries: Vec<(usize, String, bool, bool, bool)> = app
+                        let entries: Vec<(String, String, bool, bool, bool)> = app
                             .tabs
                             .iter()
                             .enumerate()
                             .map(|(index, tab)| {
                                 (
-                                    index,
+                                    tab.id.clone(),
                                     tab.title.clone(),
                                     app.active_tab == Some(index),
                                     tab.bell,
@@ -79,7 +79,7 @@ fn strip(app: &mut SshpassApp, ui: &mut egui::Ui) {
                             })
                             .collect();
 
-                        for (index, title, active, bell, alive) in entries {
+                        for (id, title, active, bell, alive) in entries {
                             let status = if bell {
                                 Some(palette.warning)
                             } else if alive {
@@ -90,10 +90,10 @@ fn strip(app: &mut SshpassApp, ui: &mut egui::Ui) {
                             let (clicked, closed) =
                                 tab_button(ui, &title, status, active, &palette, scale, true);
                             if clicked {
-                                app.actions.push(Action::SelectTab(index));
+                                app.actions.push(Action::SelectTab(id.clone()));
                             }
                             if closed {
-                                app.actions.push(Action::CloseTab(index));
+                                app.actions.push(Action::CloseTab(id));
                             }
                         }
                     });
@@ -204,10 +204,10 @@ fn terminal(
     let mut clipboard: Option<String> = None;
 
     let tab = &mut app.tabs[index];
+    let id = tab.id.clone();
     // L'identite egui suit l'onglet, pas sa position: fermer un onglet ne doit
     // pas transferer l'etat des widgets (selection, defilement) a son voisin.
-    let tab_id = egui::Id::new(&tab.id);
-    ui.push_id(tab_id, |ui| match &mut tab.state {
+    ui.push_id(egui::Id::new(&id), |ui| match &mut tab.state {
         TabState::WaitingAgent { vault, .. } => {
             let vault = vault.clone();
             ui.vertical_centered(|ui| {
@@ -222,7 +222,7 @@ fn terminal(
                 );
                 ui.add_space(16.0);
                 if ui.button("Connecter sans attendre l'agent").clicked() {
-                    queued.push(Action::ConnectWithoutAgent(index));
+                    queued.push(Action::ConnectWithoutAgent(id.clone()));
                 }
             });
         }
@@ -245,7 +245,7 @@ fn terminal(
                     });
                 ui.add_space(12.0);
                 if ui.button("Fermer l'onglet").clicked() {
-                    queued.push(Action::CloseTab(index));
+                    queued.push(Action::CloseTab(id.clone()));
                 }
             });
         }
@@ -270,7 +270,7 @@ fn terminal(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if ui.button("Fermer").clicked() {
-                                        queued.push(Action::CloseTab(index));
+                                        queued.push(Action::CloseTab(id.clone()));
                                     }
                                 },
                             );
@@ -283,7 +283,7 @@ fn terminal(
                 clipboard = Some(text);
             }
             if output.close_requested {
-                queued.push(Action::CloseTab(index));
+                queued.push(Action::CloseTab(id.clone()));
             }
         }
     });

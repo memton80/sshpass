@@ -91,8 +91,11 @@ pub enum Action {
     ToggleFavorite(String),
     NewFolder(String),
     DeleteFolder(String),
-    CloseTab(usize),
-    SelectTab(usize),
+    // Les onglets sont designes par leur identifiant, pas par leur indice:
+    // deux actions dans la meme frame (fermer puis selectionner) decaleraient
+    // les indices et agiraient sur le mauvais onglet.
+    CloseTab(String),
+    SelectTab(String),
     ShowHome,
     RefreshVaults,
     LoadItems(String),
@@ -104,7 +107,7 @@ pub enum Action {
         vault: String,
         item: String,
     },
-    ConnectWithoutAgent(usize),
+    ConnectWithoutAgent(String),
     Toast(String, ToastKind),
 }
 
@@ -351,6 +354,10 @@ impl SshpassApp {
         }
     }
 
+    fn tab_index(&self, id: &str) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.id == id)
+    }
+
     fn close_tab(&mut self, index: usize) {
         if index >= self.tabs.len() {
             return;
@@ -542,9 +549,13 @@ impl SshpassApp {
                     self.config.remove_folder(&id);
                     self.save_config();
                 }
-                Action::CloseTab(index) => self.close_tab(index),
-                Action::SelectTab(index) => {
-                    if index < self.tabs.len() {
+                Action::CloseTab(id) => {
+                    if let Some(index) = self.tab_index(&id) {
+                        self.close_tab(index);
+                    }
+                }
+                Action::SelectTab(id) => {
+                    if let Some(index) = self.tab_index(&id) {
                         self.active_tab = Some(index);
                         self.tabs[index].bell = false;
                     }
@@ -591,9 +602,12 @@ impl SshpassApp {
                         self.toast("Item Proton Pass associe", ToastKind::Success, now);
                     }
                 }
-                Action::ConnectWithoutAgent(index) => {
-                    if let Some(id) = self.tabs.get(index).and_then(|t| t.connection.clone()) {
-                        if let Some(connection) = self.config.connection(&id).cloned() {
+                Action::ConnectWithoutAgent(tab_id) => {
+                    let target = self
+                        .tab_index(&tab_id)
+                        .and_then(|index| self.tabs[index].connection.clone().map(|c| (index, c)));
+                    if let Some((index, connection_id)) = target {
+                        if let Some(connection) = self.config.connection(&connection_id).cloned() {
                             let tab = self.build_tab(&connection, ctx, now);
                             self.tabs[index].state = tab.state;
                         }
@@ -636,7 +650,8 @@ impl SshpassApp {
                     .active_tab
                     .map(|i| (i + 1) % self.tabs.len())
                     .unwrap_or(0);
-                self.actions.push(Action::SelectTab(next));
+                self.actions
+                    .push(Action::SelectTab(self.tabs[next].id.clone()));
             }
         });
     }

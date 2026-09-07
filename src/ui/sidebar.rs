@@ -84,7 +84,7 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                     }
 
                     let mut folders: Vec<_> = config.folders.iter().collect();
-                    folders.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                    folders.sort_by_key(|f| f.name.to_lowercase());
                     if !folders.is_empty() {
                         ui::section_title(ui, "Dossiers", &palette);
                     }
