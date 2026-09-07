@@ -1,0 +1,46 @@
+[package]
+name = "sshpass"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+description = "Gestionnaire de connexions SSH 100% Rust natif, terminal integre et coffre Proton Pass"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/memton80/sshpass"
+readme = "README.md"
+keywords = ["ssh", "terminal", "proton-pass", "gui"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+# GUI: egui / eframe en backend glow (OpenGL). Pas de GTK/Qt, pas de webview.
+eframe = { version = "0.35", default-features = false, features = [
+    "glow",
+    "wayland",
+    "x11",
+    "default_fonts",
+] }
+egui = "0.35"
+
+# Emulation VT100/xterm pure Rust (pas de libvte).
+alacritty_terminal = "0.26"
+
+# Polices systeme (pure Rust, pas de font-kit/freetype).
+fontdb = "0.24"
+
+# Config / serialisation
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+directories = "6"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Divers
+anyhow = "1"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
