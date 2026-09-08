@@ -421,6 +421,9 @@ mod tests {
         }
     }
 
+    // Ces deux tests pilotent un vrai sous-processus via `sh`: ils n'ont de
+    // sens que la ou un shell POSIX existe.
+    #[cfg(unix)]
     #[test]
     fn command_failure_carries_stderr() {
         let cli = PassCli::new("sh");
@@ -436,6 +439,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn hung_command_is_killed() {
         let cli = PassCli {

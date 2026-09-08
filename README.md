@@ -69,6 +69,88 @@ cargo build --release
 
 Rust 1.92 ou plus recent.
 
+## Paquets
+
+Chaque push produit les quatre formats en artefacts de la CI
+(onglet **Actions** → dernier run → *Artifacts*) :
+
+| Format | Fichier | Construit par |
+| --- | --- | --- |
+| Binaire Linux | `sshpass-x86_64-linux` | `cargo build --release` |
+| Debian / Ubuntu | `sshpass_<version>-1_amd64.deb` | [`cargo-deb`](https://github.com/kornelski/cargo-deb) |
+| Fedora / openSUSE | `sshpass-<version>-1.x86_64.rpm` | [`cargo-generate-rpm`](https://github.com/cat-in-136/cargo-generate-rpm) |
+| Portable | `sshpass-<version>-x86_64.AppImage` | [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy) |
+| Windows | `sshpass.exe` | `cargo build --release` sur `windows-latest` |
+
+Les reconstruire en local :
+
+```bash
+cargo install cargo-deb cargo-generate-rpm
+cargo build --release
+cargo deb --no-build       # -> target/debian/
+cargo generate-rpm         # -> target/generate-rpm/
+```
+
+### Dependances declarees
+
+`winit`, `glutin` et `xkbcommon-dl` ouvrent leurs bibliotheques par `dlopen`,
+pas par edition de liens : le binaire ne declare que `libc`, `libm` et
+`libgcc`. Ni `dpkg-shlibdeps` ni l'analyse ELF du RPM ne voient donc les
+bibliotheques graphiques, et un paquet reduit a ses dependances automatiques
+paniquerait au premier lancement sur une machine sans `libxkbcommon-x11`.
+
+Elles sont donc declarees a la main dans `Cargo.toml` — par nom de paquet pour
+le `.deb`, par soname pour le `.rpm` (les noms de paquets different entre
+Fedora et openSUSE). Pour verifier la liste apres une montee de version d'egui
+ou de winit :
+
+```bash
+strings -a target/release/sshpass | grep -oE 'lib[A-Za-z0-9_-]+\.so(\.[0-9]+)+' | sort -u
+```
+
+L'AppImage n'embarque aucune de ces bibliotheques : elles figurent toutes sur
+la liste d'exclusion AppImage (pilotes graphiques et bibliotheques systeme, qui
+doivent venir de l'hote).
+
+### Conflit de nom a connaitre
+
+> Debian et Ubuntu distribuent deja un paquet **`sshpass`** : l'outil en ligne
+> de commande qui fournit un mot de passe a `ssh` de maniere non interactive
+> (version 1.09 dans `noble/universe`). Il n'a aucun rapport avec ce projet,
+> mais il porte le meme nom **et** installe le meme chemin `/usr/bin/sshpass`.
+>
+> Consequences concretes : les deux paquets ne peuvent pas coexister, et comme
+> `1.09 > 0.1.0`, un `apt upgrade` remplacerait cette application par l'outil
+> en ligne de commande.
+>
+> Si vous comptez distribuer le `.deb`, renommez le paquet. Une seule ligne
+> dans `[package.metadata.deb]` suffit pour le nom du paquet :
+>
+> ```toml
+> name = "sshpass-gui"
+> ```
+>
+> Le nom du binaire, lui, se change avec une section `[[bin]]` :
+>
+> ```toml
+> [[bin]]
+> name = "sshpass-gui"
+> path = "src/main.rs"
+> ```
+>
+> (il faudra alors ajuster `Exec=` dans `packaging/sshpass.desktop` et les
+> chemins des `assets`). L'AppImage et le `.exe` ne sont pas concernes.
+
+### Icone et fichier `.desktop`
+
+L'icone n'est pas dessinee a la main : elle est rasterisee depuis la meme
+grille 8x8 que `pixel::TERMINAL`, avec la palette de `theme.rs`. Apres toute
+modification du sprite :
+
+```bash
+python3 packaging/generate-icon.py
+```
+
 ## Utilisation
 
 ### Premier lancement
@@ -183,9 +265,17 @@ src/
 
 ## Integration continue
 
-`.github/workflows/build.yml` : format, clippy (`-D warnings`), tests, build
-release et **test de demarrage headless** sous Xvfb — un binaire qui compile
-mais panique au demarrage est detecte. Le binaire est publie en artefact.
+`.github/workflows/build.yml`, trois jobs :
+
+* **checks** — `cargo fmt --check`, `clippy -D warnings`, `cargo test`.
+* **linux** — build release, puis `.deb`, `.rpm` et AppImage.
+* **windows** — `cargo test` et build release sur `windows-latest`.
+
+Les binaires ne sont pas seulement compiles : `.github/scripts/smoke-test.sh`
+les **lance vraiment** sur un serveur X virtuel et echoue s'ils s'arretent
+dans les quinze secondes. Un binaire qui compile mais panique au demarrage —
+DLL absente, police introuvable, contexte OpenGL refuse — est ainsi detecte.
+Le binaire nu, l'AppImage et le `.exe` passent chacun ce test.
 
 ## Limites connues
 
@@ -198,8 +288,12 @@ mais panique au demarrage est detecte. Le binaire est publie en artefact.
   tolerants et testes sur plusieurs conventions de nommage
   ([ADR 0002](docs/adr/0002-integration-pass-cli.md)) ; a confronter a une
   sortie reelle.
-* Cible principale : Linux (KDE/Wayland et X11). Le packaging AppImage et la
-  matrice Windows/macOS sont prevus en V2.
+* Sous Windows, l'agent SSH de Proton Pass n'est pas pilote : `pass-cli`
+  y expose un tube nomme la ou sshpass attend une socket Unix. Les modes
+  « agent existant » et « desactive » restent utilisables.
+* Pas de paquet macOS ni de `.dmg` pour l'instant, et pas de build ARM64.
+* Le `.exe` n'embarque pas encore d'icone de ressource Windows (il faudrait
+  une dependance de build `winresource` et un `.ico`).
 
 ## Licence
 

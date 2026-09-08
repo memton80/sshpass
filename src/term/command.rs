@@ -26,12 +26,11 @@ pub struct SessionContext {
 impl CommandSpec {
     /// Shell de connexion local, pour un onglet sans connexion distante.
     pub fn login_shell() -> Self {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         Self {
-            program: shell,
+            program: default_shell(),
             args: Vec::new(),
             env: base_env(),
-            working_directory: std::env::var_os("HOME").map(PathBuf::from),
+            working_directory: home_directory(),
         }
     }
 
@@ -43,6 +42,25 @@ impl CommandSpec {
             format!("{} {}", self.program, self.args.join(" "))
         }
     }
+}
+
+/// Shell interactif du systeme.
+#[cfg(unix)]
+fn default_shell() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+}
+
+#[cfg(windows)]
+fn default_shell() -> String {
+    // `COMSPEC` pointe sur cmd.exe; PowerShell n'est pas garanti present.
+    std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+}
+
+/// Repertoire personnel de l'utilisateur.
+fn home_directory() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 /// Variables communes a toutes les sessions.
