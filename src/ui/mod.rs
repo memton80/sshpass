@@ -1,5 +1,7 @@
 //! Interface: panneaux, boites de dialogue et primitives pixel art.
 
+pub mod anim;
+pub mod autocomplete;
 pub mod dialogs;
 pub mod editor;
 pub mod home;
@@ -50,27 +52,19 @@ pub fn pixel_button(
     let text_width = label.chars().count() as f32 * 7.0;
     let size = egui::vec2(text_width + 16.0 + sprite.size(scale).x, 24.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let t = anim::hover(ui, response.id.with("hover"), response.hovered());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        let fill = if response.hovered() {
-            palette.surface_high
-        } else {
-            palette.surface
-        };
-        painter.rect_filled(rect, egui::CornerRadius::ZERO, fill);
-        let color = if response.hovered() {
-            palette.accent_soft
-        } else {
-            palette.text_dim
-        };
+        painter.rect_filled(
+            rect,
+            egui::CornerRadius::ZERO,
+            anim::lerp_color(palette.surface, palette.surface_high, t),
+        );
+        let color = anim::lerp_color(palette.text_dim, palette.accent_soft, t);
         pixel::frame(
             painter,
             rect,
-            if response.hovered() {
-                palette.accent
-            } else {
-                palette.border
-            },
+            anim::lerp_color(palette.border, palette.accent, t),
             1.0,
         );
         pixel::draw(

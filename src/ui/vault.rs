@@ -7,9 +7,18 @@ use crate::config::AgentMode;
 use crate::pass::AgentState;
 use crate::ui::{self, pixel};
 
+/// Affiche le panneau, en le faisant glisser a l'ouverture et a la fermeture.
+///
+/// `show_collapsible` est l'animation native d'egui: le panneau sort et rentre
+/// par son bord, et la zone centrale suit le mouvement. Il replie aussi le
+/// panneau quand on tire la poignee de redimensionnement en deca de sa largeur
+/// minimale, ce qui evite d'avoir a viser le bouton de la barre d'outils.
 pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
     let palette = app.palette;
     let scale = app.config.ui.pixel_scale as f32;
+    // `show_collapsible` emprunte le booleen: on travaille sur une copie, que
+    // l'on recopie ensuite dans l'application.
+    let mut expanded = app.show_vault_panel;
 
     egui::Panel::right("vault_panel")
         .resizable(true)
@@ -20,7 +29,7 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                 .fill(palette.surface)
                 .inner_margin(Margin::same(10)),
         )
-        .show(ui, |ui| {
+        .show_collapsible(ui, &mut expanded, |ui| {
             ui.horizontal(|ui| {
                 pixel::icon_two_tone(ui, &pixel::KEY, scale, palette.accent_soft, palette.success);
                 ui.label(RichText::new("Proton Pass").strong().size(14.0));
@@ -56,6 +65,8 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
             ui::separator(ui, &palette);
             items_section(app, ui);
         });
+
+    app.show_vault_panel = expanded;
 }
 
 fn agents_section(app: &mut SshpassApp, ui: &mut egui::Ui) {

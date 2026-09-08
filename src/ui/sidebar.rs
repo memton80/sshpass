@@ -2,12 +2,12 @@
 
 use std::collections::HashSet;
 
-use egui::{Align2, Color32, CornerRadius, FontId, Frame, Margin, Rect, RichText, Sense, Vec2};
+use egui::{Align2, CornerRadius, FontId, Frame, Margin, Rect, RichText, Sense, Vec2};
 
 use crate::app::{Action, SshpassApp};
 use crate::config::{Config, Connection};
 use crate::theme::Palette;
-use crate::ui::{self, pixel};
+use crate::ui::{self, anim, pixel};
 
 /// Hauteur d'une ligne de la liste.
 const ROW_HEIGHT: f32 = 26.0;
@@ -196,10 +196,16 @@ fn folder_row(
 ) -> bool {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
+    let t = anim::hover(ui, response.id.with("hover"), response.hovered());
+
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        if response.hovered() {
-            painter.rect_filled(rect, CornerRadius::ZERO, palette.surface_high);
+        if t > 0.0 {
+            painter.rect_filled(
+                rect,
+                CornerRadius::ZERO,
+                anim::lerp_color(palette.surface, palette.surface_high, t),
+            );
         }
         let chevron = if expanded {
             pixel::CHEVRON_DOWN
@@ -212,7 +218,7 @@ fn folder_row(
             egui::pos2(rect.left() + 2.0, icon_y),
             &chevron,
             scale,
-            palette.text_dim,
+            anim::lerp_color(palette.text_dim, palette.text, t),
             palette.text_dim,
         );
         pixel::draw(
@@ -220,7 +226,7 @@ fn folder_row(
             egui::pos2(rect.left() + 6.0 + 8.0 * scale, icon_y),
             &pixel::FOLDER,
             scale,
-            palette.accent_soft,
+            anim::lerp_color(palette.accent_soft, palette.accent, t),
             palette.accent,
         );
         painter.text(
@@ -284,24 +290,33 @@ fn connection_row(
     let hovered = response.hovered();
     let on_edit = hovered && pointer.is_some_and(|p| edit_rect.expand(4.0).contains(p));
     let on_delete = hovered && pointer.is_some_and(|p| delete_rect.expand(4.0).contains(p));
+    // Avancement du survol: la ligne ne bascule pas d'un etat a l'autre, elle y
+    // glisse, et la cible croise les actions rapides en fondu plutot que de
+    // disparaitre d'un coup.
+    let t = anim::hover(ui, response.id.with("hover"), hovered);
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        if response.hovered() {
-            painter.rect_filled(rect, CornerRadius::ZERO, palette.surface_high);
+        if t > 0.0 {
+            painter.rect_filled(
+                rect,
+                CornerRadius::ZERO,
+                anim::lerp_color(palette.surface, palette.surface_high, t),
+            );
         }
         if is_open {
-            // Liseré gauche: la connexion a un onglet ouvert.
+            // Liseré gauche: la connexion a un onglet ouvert. Il s'epaissit au
+            // survol pour repondre au pointeur.
             let marker = Rect::from_min_max(
                 rect.min,
-                egui::pos2(rect.left() + 2.0 * scale, rect.bottom()),
+                egui::pos2(rect.left() + anim::lerp(2.0, 3.0, t) * scale, rect.bottom()),
             );
             painter.rect_filled(marker, CornerRadius::ZERO, palette.accent);
         }
 
         let icon_y = rect.center().y - 4.0 * scale;
         let icon_x = rect.left() + 4.0 + 2.0 * scale;
-        let (primary, secondary) = if connection.proton.is_some() {
+        let (base_primary, secondary) = if connection.proton.is_some() {
             (palette.accent_soft, palette.success)
         } else {
             (palette.text_dim, palette.text_dim)
@@ -316,20 +331,22 @@ fn connection_row(
             egui::pos2(icon_x, icon_y),
             &sprite,
             scale,
-            primary,
+            anim::lerp_color(base_primary, palette.accent, t),
             secondary,
         );
 
         let text_x = icon_x + 8.0 * scale + 8.0;
         let mut text_right = rect.right() - 4.0;
-        if connection.favorite && !hovered {
+        if connection.favorite {
+            // L'etoile s'efface au profit des actions rapides.
+            let star = anim::fade(palette.warning, 1.0 - t);
             pixel::draw(
                 painter,
                 egui::pos2(text_right - 8.0 * scale, icon_y),
                 &pixel::STAR,
                 scale,
-                palette.warning,
-                palette.warning,
+                star,
+                star,
             );
             text_right -= 8.0 * scale + 4.0;
         }
@@ -342,32 +359,35 @@ fn connection_row(
             palette.text,
         );
 
-        if hovered {
+        if t > 0.0 {
+            let edit_color = if on_edit {
+                palette.accent_soft
+            } else {
+                palette.text_dim
+            };
             pixel::draw(
                 painter,
                 edit_rect.min,
                 &pixel::PENCIL,
                 scale,
-                if on_edit {
-                    palette.accent_soft
-                } else {
-                    palette.text_dim
-                },
-                palette.warning,
+                anim::fade(edit_color, t),
+                anim::fade(palette.warning, t),
             );
+            let delete_color = if on_delete {
+                palette.danger
+            } else {
+                palette.text_dim
+            };
             pixel::draw(
                 painter,
                 delete_rect.min,
                 &pixel::TRASH,
                 scale,
-                if on_delete {
-                    palette.danger
-                } else {
-                    palette.text_dim
-                },
-                palette.surface,
+                anim::fade(delete_color, t),
+                anim::fade(palette.surface, t),
             );
-        } else {
+        }
+        if t < 1.0 {
             // Le `user@host` n'apparait que s'il reste de la place: dans une
             // barre laterale etroite, mieux vaut un nom lisible qu'une cible
             // tronquee. La largeur est mesuree, pas estimee: une estimation par
@@ -376,18 +396,14 @@ fn connection_row(
             if remaining > 40.0 {
                 let font = FontId::proportional(11.0);
                 let target = connection.target();
+                let faded = anim::fade(palette.text_dim, 1.0 - t);
                 let mut budget = target.chars().count();
-                let mut galley =
-                    painter.layout_no_wrap(target.clone(), font.clone(), palette.text_dim);
+                let mut galley = painter.layout_no_wrap(target.clone(), font.clone(), faded);
                 // On raccourcit jusqu'a tenir: la largeur moyenne par
                 // caractere varie assez pour qu'une seule estimation rate.
                 while galley.size().x > remaining && budget > 6 {
                     budget = budget.min((budget as f32 * remaining / galley.size().x) as usize) - 1;
-                    galley = painter.layout_no_wrap(
-                        truncate(&target, budget),
-                        font.clone(),
-                        palette.text_dim,
-                    );
+                    galley = painter.layout_no_wrap(truncate(&target, budget), font.clone(), faded);
                 }
                 if galley.size().x <= remaining {
                     painter.galley(
@@ -396,7 +412,7 @@ fn connection_row(
                             rect.center().y - galley.size().y / 2.0,
                         ),
                         galley,
-                        palette.text_dim,
+                        faded,
                     );
                 }
             }
@@ -468,7 +484,7 @@ fn connection_row(
         });
         ui.separator();
         if ui
-            .button(RichText::new("Supprimer").color(Color32::from_rgb(0xF8, 0x71, 0x71)))
+            .button(RichText::new("Supprimer").color(palette.danger))
             .clicked()
         {
             actions.push(Action::AskDeleteConnection(connection.id.clone()));

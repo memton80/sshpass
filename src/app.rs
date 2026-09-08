@@ -689,9 +689,9 @@ impl eframe::App for SshpassApp {
         // Les panneaux se posent dans l'ordre: barres, puis zone centrale.
         ui::toolbar::show(self, ui);
         ui::sidebar::show(self, ui);
-        if self.show_vault_panel {
-            ui::vault::show(self, ui);
-        }
+        // Appele meme referme: c'est le panneau lui-meme qui anime sa sortie
+        // et sa rentree, il doit donc rester dans la boucle de rendu.
+        ui::vault::show(self, ui);
         ui::tabs::show(self, ui);
         // Fenetres et calques flottants: toujours rattaches au contexte.
         ui::editor::show(self, &ctx);

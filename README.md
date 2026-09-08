@@ -22,6 +22,12 @@ et une emulation de terminal en Rust pur.
   associer un item a une connexion, voir et piloter l'etat des agents SSH.
 * **CRUD des connexions** : creation, modification, suppression, deplacement
   entre dossiers, favoris et tags.
+* **Autocompletion** sur l'hote, l'utilisateur, le coffre et l'item, alimentee
+  par les connexions deja enregistrees et le coffre deja charge — navigation
+  aux fleches, `Entree` ou `Tab` pour accepter, `Echap` pour fermer.
+* **Interface animee** : survols en fondu, transitions de vue et glissement du
+  panneau Proton Pass, le tout avec les animateurs natifs d'egui (aucune
+  dependance ajoutee) — voir [ADR 0005](docs/adr/0005-animations-et-autocompletion.md).
 * **Theme sombre violet/gris**, habillage pixel art dessine (icones, bordures,
   pastilles, curseur), texte en **police systeme**.
 
@@ -34,6 +40,7 @@ et une emulation de terminal en Rust pur.
 | Polices | [`fontdb`](https://crates.io/crates/fontdb) | lecture des polices systeme en Rust pur, sans `freetype` ni `font-kit` |
 | Secrets | `pass-cli` en sous-processus | sortie `--output json` — voir [ADR 0002](docs/adr/0002-integration-pass-cli.md) |
 | Config | TOML | lisible et editable a la main — voir [ADR 0004](docs/adr/0004-format-de-configuration.md) |
+| Animations | `Context::animate_*` d'egui | interpolation par identifiant, rafraichissement demande automatiquement — voir [ADR 0005](docs/adr/0005-animations-et-autocompletion.md) |
 
 Le pixel art se limite aux elements graphiques : **tout le texte** (libelles,
 champs, terminal) utilise la police par defaut du systeme.
@@ -112,6 +119,7 @@ Necessite OpenSSH 8.4 ou plus recent (pour `SSH_ASKPASS_REQUIRE=force`).
 | `Ctrl+Maj+A` | Tout selectionner dans le terminal |
 | `Ctrl+Maj+W` | Fermer l'onglet |
 | `Maj+PagePrec` / `Maj+PageSuiv` | Defiler l'historique |
+| `Haut` / `Bas`, `Entree`, `Echap` | Naviguer, accepter, fermer une liste de suggestions |
 
 Les combinaisons `Ctrl+Maj+…` sont reservees a l'interface : tout le reste
 descend dans le terminal, y compris `Ctrl+C`, `Ctrl+D` et `Ctrl+F`.
@@ -170,7 +178,7 @@ src/
 ├── config/        modele de donnees et persistance TOML
 ├── pass/          pass-cli (cli.rs), agents SSH (agent.rs), pont askpass
 ├── term/          session PTY, encodage clavier, couleurs, rendu egui
-└── ui/            panneaux, fenetres et primitives pixel art
+└── ui/            panneaux, fenetres, animations, autocompletion, pixel art
 ```
 
 ## Integration continue

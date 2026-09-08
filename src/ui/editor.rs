@@ -2,6 +2,8 @@
 
 use egui::{ComboBox, Margin, RichText};
 
+use crate::ui::autocomplete::{Autocomplete, Suggestion};
+
 use crate::app::{Action, SshpassApp, ToastKind};
 use crate::config::{AuthMethod, Connection, ProtonRef};
 use crate::ui::{self, pixel};
@@ -18,7 +20,7 @@ pub struct ConnectionEditor {
     pub vault_text: String,
     pub item_text: String,
     pub field_text: String,
-    pub item_filter: String,
+
     pub error: Option<String>,
 }
 
@@ -32,7 +34,7 @@ impl ConnectionEditor {
             vault_text: proton.vault,
             item_text: proton.item,
             field_text: proton.field.unwrap_or_default(),
-            item_filter: String::new(),
+
             error: None,
             connection,
             is_new,
@@ -126,6 +128,22 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
     let mut delete: Option<String> = None;
     let mut load_items: Option<String> = None;
 
+    // Propositions tirees de ce qui est deja connu: la frappe ne declenche
+    // aucune requete.
+    let known_hosts = host_suggestions(app);
+    let known_users = user_suggestions(app);
+    let vault_suggestions: Vec<Suggestion> = app
+        .vaults
+        .iter()
+        .map(|vault| {
+            let detail = vault
+                .item_count
+                .map(|n| format!("{n} items"))
+                .unwrap_or_default();
+            Suggestion::new(vault.name.clone(), detail)
+        })
+        .collect();
+
     let editor = app.editor.as_mut().expect("editeur ouvert");
     let title = if editor.is_new {
         "Nouvelle connexion"
@@ -137,6 +155,10 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
         .get(editor.vault_text.trim())
         .cloned()
         .unwrap_or_default();
+    let item_suggestions: Vec<Suggestion> = items
+        .iter()
+        .map(|item| Suggestion::new(item.title.clone(), item.kind.label().to_string()))
+        .collect();
 
     egui::Window::new(title)
         .collapsible(false)
@@ -163,19 +185,17 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                     ui.end_row();
 
                     ui.label("Hote");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut editor.connection.host)
-                            .hint_text("10.0.0.4 ou example.com")
-                            .desired_width(f32::INFINITY),
-                    );
+                    Autocomplete::new("editor_host", &known_hosts)
+                        .hint("10.0.0.4 ou example.com")
+                        .icon(&pixel::SERVER)
+                        .show(ui, &mut editor.connection.host, &palette, scale);
                     ui.end_row();
 
                     ui.label("Utilisateur");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut editor.connection.user)
-                            .hint_text("root")
-                            .desired_width(f32::INFINITY),
-                    );
+                    Autocomplete::new("editor_user", &known_users)
+                        .hint("root")
+                        .icon(&pixel::TERMINAL)
+                        .show(ui, &mut editor.connection.user, &palette, scale);
                     ui.end_row();
 
                     ui.label("Port");
@@ -261,41 +281,34 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                 .spacing([12.0, 8.0])
                 .show(ui, |ui| {
                     ui.label("Coffre");
-                    ui.horizontal(|ui| {
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut editor.vault_text)
-                                .hint_text("SSH Keys")
-                                .desired_width(220.0),
-                        );
-                        if response.changed() {
-                            editor.item_text.clear();
+                    let response = Autocomplete::new("editor_vault", &vault_suggestions)
+                        .hint("SSH Keys")
+                        .icon(&pixel::FOLDER)
+                        .width(220.0)
+                        .show(ui, &mut editor.vault_text, &palette, scale);
+                    if response.changed() {
+                        // Changer de coffre invalide l'item choisi, et charge la
+                        // liste du nouveau coffre des qu'on en reconnait le nom.
+                        editor.item_text.clear();
+                        let vault = editor.vault_text.trim().to_string();
+                        if vaults.iter().any(|known| known == &vault) {
+                            load_items = Some(vault);
                         }
-                        if !vaults.is_empty() {
-                            ComboBox::from_id_salt("vault_pick")
-                                .selected_text("Choisir")
-                                .width(110.0)
-                                .show_ui(ui, |ui| {
-                                    for vault in &vaults {
-                                        if ui.selectable_label(false, vault).clicked() {
-                                            editor.vault_text = vault.clone();
-                                            editor.item_text.clear();
-                                            load_items = Some(vault.clone());
-                                        }
-                                    }
-                                });
-                        }
-                    });
+                    }
                     ui.end_row();
 
                     ui.label("Item");
                     ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut editor.item_text)
-                                .hint_text("Titre de l'item")
-                                .desired_width(220.0),
-                        );
+                        Autocomplete::new("editor_item", &item_suggestions)
+                            .hint("Titre de l'item")
+                            .icon(&pixel::KEY)
+                            .width(220.0)
+                            .show(ui, &mut editor.item_text, &palette, scale);
                         if !editor.vault_text.trim().is_empty()
-                            && ui.small_button("Parcourir").clicked()
+                            && ui
+                                .small_button("Charger")
+                                .on_hover_text("Lire le coffre pour alimenter les suggestions")
+                                .clicked()
                         {
                             load_items = Some(editor.vault_text.trim().to_string());
                         }
@@ -311,26 +324,15 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                     ui.end_row();
                 });
 
-            // La liste n'apparait qu'apres « Parcourir »: elle est haute et
-            // n'a pas de raison d'occuper la fiche en permanence.
-            if !items.is_empty() {
-                ui.add_space(4.0);
-                ui.add(
-                    egui::TextEdit::singleline(&mut editor.item_filter)
-                        .hint_text("Filtrer les items")
-                        .desired_width(f32::INFINITY),
+            // Les items charges alimentent directement les suggestions du champ
+            // ci-dessus: plus besoin d'une liste separee sous la fiche.
+            if !item_suggestions.is_empty() {
+                ui.add_space(2.0);
+                ui::hint(
+                    ui,
+                    &format!("{} items proposes pour ce coffre.", item_suggestions.len()),
+                    &palette,
                 );
-                egui::ScrollArea::vertical()
-                    .max_height(110.0)
-                    .show(ui, |ui| {
-                        for item in items.iter().filter(|i| i.matches(&editor.item_filter)) {
-                            let selected = editor.item_text == item.title;
-                            let label = format!("{}  ·  {}", item.title, item.kind.label());
-                            if ui.selectable_label(selected, label).clicked() {
-                                editor.item_text = item.title.clone();
-                            }
-                        }
-                    });
             }
 
             ui::separator(ui, &palette);
@@ -421,6 +423,51 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
     if close {
         app.editor = None;
     }
+}
+
+/// Hotes deja utilises, les plus recemment ouverts en tete.
+fn host_suggestions(app: &SshpassApp) -> Vec<Suggestion> {
+    let mut connections: Vec<&Connection> = app.config.connections.iter().collect();
+    connections.sort_by_key(|c| std::cmp::Reverse(c.last_used));
+    connections
+        .iter()
+        .filter(|c| !c.host.trim().is_empty())
+        .map(|c| {
+            let detail = c
+                .folder
+                .as_ref()
+                .and_then(|id| app.config.folders.iter().find(|f| &f.id == id))
+                .map(|f| f.name.clone())
+                .unwrap_or_default();
+            Suggestion::new(c.host.clone(), detail)
+        })
+        .collect()
+}
+
+/// Utilisateurs deja employes, les plus frequents en tete.
+fn user_suggestions(app: &SshpassApp) -> Vec<Suggestion> {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for connection in &app.config.connections {
+        let user = connection.user.trim();
+        if user.is_empty() {
+            continue;
+        }
+        match counts.iter_mut().find(|(name, _)| name == user) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((user.to_string(), 1)),
+        }
+    }
+    counts.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+    counts
+        .into_iter()
+        .map(|(user, count)| {
+            if count > 1 {
+                Suggestion::new(user, format!("{count} connexions"))
+            } else {
+                Suggestion::plain(user)
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

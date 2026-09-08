@@ -4,7 +4,7 @@ use egui::{Align2, Color32, CornerRadius, FontId, Frame, Margin, Rect, RichText,
 
 use crate::app::{Action, SshpassApp, TabState};
 use crate::term::render;
-use crate::ui::{home, pixel};
+use crate::ui::{anim, home, pixel};
 
 const TAB_HEIGHT: f32 = 30.0;
 
@@ -23,14 +23,37 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
         .frame(Frame::new().fill(palette.bg))
         .show(ui, |ui| {
             strip(app, ui);
+
+            // Transition entre vues: la nouvelle apparait en fondu. La cle
+            // identifie la vue affichee; un changement relance l'animation.
+            let key = app
+                .active_tab
+                .and_then(|index| app.tabs.get(index))
+                .map(|tab| view_key(&tab.id))
+                .unwrap_or(0);
+            let progress = anim::view_transition(ui, egui::Id::new("vue"), key, anim::VIEW);
+
             match app.active_tab {
                 Some(index) if index < app.tabs.len() => {
+                    // Seule l'opacite est animee ici: decaler le rectangle du
+                    // terminal changerait le nombre de colonnes a chaque frame
+                    // et declencherait une cascade de redimensionnements.
+                    ui.multiply_opacity(progress);
                     terminal(app, ui, &ctx, index, interactive)
                 }
                 _ => {
                     app.active_tab = None;
+                    ui.multiply_opacity(progress);
+                    // L'accueil, lui, peut glisser: rien n'y depend de la
+                    // hauteur exacte disponible.
+                    let slide = anim::lerp(10.0, 0.0, progress) as i8;
                     egui::Frame::new()
-                        .inner_margin(Margin::same(8))
+                        .inner_margin(Margin {
+                            left: 8,
+                            right: 8,
+                            top: 8 + slide,
+                            bottom: 8,
+                        })
                         .show(ui, |ui| {
                             egui::ScrollArea::vertical()
                                 .auto_shrink([false, false])
@@ -122,22 +145,25 @@ fn tab_button(
     );
     let pointer = ui.input(|i| i.pointer.hover_pos());
     let on_close = closable && pointer.is_some_and(|p| close_rect.contains(p));
+    let hover = anim::hover(ui, response.id.with("hover"), response.hovered());
+    // Le soulignement de l'onglet courant se deplie depuis la gauche.
+    let selected = anim::toggle(ui, response.id.with("active"), active, anim::VIEW);
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        let fill = if active {
-            palette.surface
-        } else if response.hovered() {
-            palette.surface_high
-        } else {
-            palette.bg_deep
-        };
-        painter.rect_filled(rect, CornerRadius::ZERO, fill);
-        if active {
+        let idle = anim::lerp_color(palette.bg_deep, palette.surface_high, hover);
+        painter.rect_filled(
+            rect,
+            CornerRadius::ZERO,
+            anim::lerp_color(idle, palette.surface, selected),
+        );
+        if selected > 0.0 {
             // Souligne l'onglet courant plutot que de le cerner: la barre
             // reste lisible meme avec beaucoup d'onglets.
-            let underline =
-                Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 2.0), rect.max);
+            let underline = Rect::from_min_max(
+                egui::pos2(rect.left(), rect.bottom() - 2.0),
+                egui::pos2(rect.left() + rect.width() * selected, rect.bottom()),
+            );
             painter.rect_filled(underline, CornerRadius::ZERO, palette.accent);
         }
 
@@ -164,24 +190,21 @@ fn tab_button(
             text_x += 8.0 * scale + 4.0;
         }
 
+        let idle_text = anim::lerp_color(palette.text_dim, palette.text, hover);
         painter.text(
             egui::pos2(text_x, rect.center().y),
             Align2::LEFT_CENTER,
             &label,
             FontId::proportional(12.0),
-            if active {
-                palette.text
-            } else {
-                palette.text_dim
-            },
+            anim::lerp_color(idle_text, palette.text, selected),
         );
 
         if closable {
-            let color = if on_close {
-                palette.danger
-            } else {
-                palette.text_dim
-            };
+            // La croix s'affirme au survol de l'onglet et vire au rouge quand
+            // le pointeur l'atteint, au lieu de basculer d'un coup.
+            let base = anim::lerp_color(palette.text_dim, palette.danger, f32::from(on_close));
+            let visible = hover.max(selected).max(0.5);
+            let color = anim::fade(base, visible);
             pixel::draw(painter, close_rect.min, &pixel::CLOSE, 1.5, color, color);
         }
     }
@@ -292,4 +315,13 @@ fn terminal(
         ctx.copy_text(text);
     }
     app.actions.extend(queued);
+}
+
+/// Cle stable d'une vue, pour detecter un changement d'onglet.
+fn view_key(id: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut hasher);
+    // Zero est reserve a l'accueil.
+    hasher.finish() | 1
 }

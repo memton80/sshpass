@@ -4,7 +4,7 @@ use egui::{Align, Align2, CornerRadius, FontId, Layout, RichText, Sense, Vec2};
 
 use crate::app::{Action, SshpassApp};
 use crate::config::relative_time;
-use crate::ui::{self, pixel};
+use crate::ui::{self, anim, pixel};
 
 pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
     let palette = app.palette;
@@ -122,26 +122,30 @@ fn entry(app: &SshpassApp, ui: &mut egui::Ui, name: &str, target: &str, when: &s
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::click());
 
+    // Le survol fait glisser la carte vers la droite et allume sa bordure,
+    // au lieu de la faire basculer d'un etat a l'autre.
+    let t = anim::hover(ui, response.id.with("hover"), response.hovered());
+    let shift = anim::lerp(0.0, 4.0, t);
+
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        let background = if response.hovered() {
-            palette.surface_high
-        } else {
-            palette.surface
-        };
-        painter.rect_filled(rect, CornerRadius::ZERO, background);
-        if response.hovered() {
-            pixel::frame(painter, rect, palette.accent, scale);
+        painter.rect_filled(
+            rect,
+            CornerRadius::ZERO,
+            anim::lerp_color(palette.surface, palette.surface_high, t),
+        );
+        if t > 0.0 {
+            pixel::frame(painter, rect, anim::fade(palette.accent, t), scale);
         }
         pixel::draw(
             painter,
-            egui::pos2(rect.left() + 10.0, rect.center().y - 4.0 * scale),
+            egui::pos2(rect.left() + 10.0 + shift, rect.center().y - 4.0 * scale),
             &pixel::SERVER,
             scale,
-            palette.accent_soft,
+            anim::lerp_color(palette.accent_soft, palette.accent, t),
             palette.accent,
         );
-        let text_x = rect.left() + 18.0 + 8.0 * scale;
+        let text_x = rect.left() + 18.0 + 8.0 * scale + shift;
         painter.text(
             egui::pos2(text_x, rect.center().y - 9.0),
             Align2::LEFT_TOP,
