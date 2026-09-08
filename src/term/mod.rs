@@ -119,11 +119,9 @@ impl TerminalSession {
         ctx: &egui::Context,
         cleanup: Vec<PathBuf>,
     ) -> anyhow::Result<Self> {
-        // `..Default::default()` et non une liste exhaustive: `tty::Options`
-        // porte un champ supplementaire sous Windows (`escape_args`), et une
-        // initialisation complete ne compilerait que sous Unix. Clippy le
-        // signale comme inutile parce qu'il n'analyse que la cible courante.
-        #[allow(clippy::needless_update)]
+        // Initialisation exhaustive volontaire: si `tty::Options` gagne un
+        // champ, on veut une erreur de compilation plutot qu'une valeur par
+        // defaut silencieuse.
         let options = tty::Options {
             shell: Some(tty::Shell::new(spec.program.clone(), spec.args.clone())),
             working_directory: spec.working_directory.clone(),
@@ -133,7 +131,6 @@ impl TerminalSession {
             // l'utilisateur a besoin de lire.
             drain_on_exit: true,
             env: spec.env.clone(),
-            ..Default::default()
         };
         let window_size = WindowSize {
             num_lines: size.screen_lines as u16,

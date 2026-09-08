@@ -80,7 +80,6 @@ Chaque push produit les quatre formats en artefacts de la CI
 | Debian / Ubuntu | `sshpass_<version>-1_amd64.deb` | [`cargo-deb`](https://github.com/kornelski/cargo-deb) |
 | Fedora / openSUSE | `sshpass-<version>-1.x86_64.rpm` | [`cargo-generate-rpm`](https://github.com/cat-in-136/cargo-generate-rpm) |
 | Portable | `sshpass-<version>-x86_64.AppImage` | [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy) |
-| Windows | `sshpass.exe` | `cargo build --release` sur `windows-latest` |
 
 Les reconstruire en local :
 
@@ -139,7 +138,7 @@ doivent venir de l'hote).
 > ```
 >
 > (il faudra alors ajuster `Exec=` dans `packaging/sshpass.desktop` et les
-> chemins des `assets`). L'AppImage et le `.exe` ne sont pas concernes.
+> chemins des `assets`). L'AppImage n'est pas concernee.
 
 ### Icone et fichier `.desktop`
 
@@ -269,13 +268,12 @@ src/
 
 * **checks** — `cargo fmt --check`, `clippy -D warnings`, `cargo test`.
 * **linux** — build release, puis `.deb`, `.rpm` et AppImage.
-* **windows** — `cargo test` et build release sur `windows-latest`.
 
 Les binaires ne sont pas seulement compiles : `.github/scripts/smoke-test.sh`
 les **lance vraiment** sur un serveur X virtuel et echoue s'ils s'arretent
 dans les quinze secondes. Un binaire qui compile mais panique au demarrage —
-DLL absente, police introuvable, contexte OpenGL refuse — est ainsi detecte.
-Le binaire nu, l'AppImage et le `.exe` passent chacun ce test.
+bibliotheque absente, police introuvable, contexte OpenGL refuse — est ainsi
+detecte. Le binaire nu et l'AppImage passent chacun ce test.
 
 ## Limites connues
 
@@ -288,12 +286,11 @@ Le binaire nu, l'AppImage et le `.exe` passent chacun ce test.
   tolerants et testes sur plusieurs conventions de nommage
   ([ADR 0002](docs/adr/0002-integration-pass-cli.md)) ; a confronter a une
   sortie reelle.
-* Sous Windows, l'agent SSH de Proton Pass n'est pas pilote : `pass-cli`
-  y expose un tube nomme la ou sshpass attend une socket Unix. Les modes
-  « agent existant » et « desactive » restent utilisables.
+* **Systemes Unix uniquement.** Le PTY, les sockets d'agent et le pont
+  `SSH_ASKPASS` reposent sur des mecanismes POSIX; compiler pour Windows
+  s'arrete sur un `compile_error!` explicite. Cible eprouvee : Linux
+  (KDE/Wayland et X11).
 * Pas de paquet macOS ni de `.dmg` pour l'instant, et pas de build ARM64.
-* Le `.exe` n'embarque pas encore d'icone de ressource Windows (il faudrait
-  une dependance de build `winresource` et un `.ico`).
 
 ## Licence
 

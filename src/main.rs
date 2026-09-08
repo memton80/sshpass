@@ -4,8 +4,11 @@
 //! Qt, Electron ou webview), `alacritty_terminal` pour l'emulation VT, et
 //! `pass-cli` en sous-processus pour Proton Pass.
 
-// Sur Windows, ne pas ouvrir de console derriere la fenetre en release.
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// sshpass ne cible que les systemes Unix: PTY, sockets d'agent et script
+// SSH_ASKPASS reposent tous sur des mecanismes POSIX. Le message est explicite
+// plutot que de laisser une cascade d'erreurs incomprehensibles.
+#[cfg(not(unix))]
+compile_error!("sshpass ne cible que les systemes Unix (Linux, *BSD, macOS).");
 
 mod app;
 mod config;

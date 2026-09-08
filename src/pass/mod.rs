@@ -126,16 +126,10 @@ pub fn write_askpass_script(binary: &str, uri: &str, id: &str) -> std::io::Resul
     Ok(path)
 }
 
-#[cfg(unix)]
 fn set_executable(path: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     // 0o700: le script est lisible et executable par le seul proprietaire.
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &std::path::Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 /// Entoure une valeur de guillemets simples pour un shell POSIX.
@@ -164,7 +158,6 @@ mod tests {
         assert!(content.starts_with("#!/bin/sh"));
         assert!(content.contains("'pass://Vault/Item/password'"));
         assert!(content.contains("item view"));
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&path)
