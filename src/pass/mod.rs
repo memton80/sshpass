@@ -109,7 +109,7 @@ impl PassWorker {
 /// Ecrit un script `SSH_ASKPASS` qui delegue la lecture du mot de passe a
 /// `pass-cli`.
 ///
-/// Le secret ne transite ainsi ni par la memoire de sshpass ni par le PTY:
+/// Le secret ne transite ainsi ni par la memoire de sshpass-gui ni par le PTY:
 /// `ssh` execute lui-meme le script et lit sa sortie. Le fichier ne contient
 /// que l'URI `pass://`, jamais la valeur.
 pub fn write_askpass_script(binary: &str, uri: &str, id: &str) -> std::io::Result<PathBuf> {
@@ -117,7 +117,7 @@ pub fn write_askpass_script(binary: &str, uri: &str, id: &str) -> std::io::Resul
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("askpass-{id}.sh"));
     let script = format!(
-        "#!/bin/sh\n# Genere par sshpass. Ne contient aucun secret, seulement une reference.\nexec {} item view {}\n",
+        "#!/bin/sh\n# Genere par sshpass-gui. Ne contient aucun secret, seulement une reference.\nexec {} item view {}\n",
         shell_quote(binary),
         shell_quote(uri),
     );
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn askpass_script_contains_uri_not_secret() {
-        let dir = std::env::temp_dir().join(format!("sshpass-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("sshpass-gui-test-{}", std::process::id()));
         std::env::set_var("XDG_RUNTIME_DIR", &dir);
         let path = write_askpass_script("pass-cli", "pass://Vault/Item/password", "test")
             .expect("ecriture");

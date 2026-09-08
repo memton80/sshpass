@@ -1,5 +1,5 @@
 [package]
-name = "sshpass"
+name = "sshpass-gui"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.92"
@@ -49,11 +49,11 @@ env_logger = "0.11"
 # d'autre — un paquet installe sur un systeme sans libxkbcommon-x11
 # paniquerait au demarrage. Les bibliotheques ouvertes dynamiquement sont
 # listees a la main; la liste se verifie avec:
-#     strings -a target/release/sshpass | grep -oE "lib[A-Za-z0-9_-]+\.so(\.[0-9]+)+"
+#     strings -a target/release/sshpass-gui | grep -oE "lib[A-Za-z0-9_-]+\.so(\.[0-9]+)+"
 # ---------------------------------------------------------------------------
 [package.metadata.deb]
 maintainer = "memton80 <memton80@users.noreply.github.com>"
-copyright = "2026 contributeurs de sshpass"
+copyright = "2026 contributeurs de sshpass-gui"
 license-file = ["LICENSE", "0"]
 section = "net"
 priority = "optional"
@@ -64,10 +64,10 @@ Gestionnaire de connexions SSH 100% Rust natif, avec terminal integre.
 Ni Electron, ni webview, ni GTK, ni Qt. Les cles et mots de passe restent
 dans Proton Pass: la configuration ne stocke que des references."""
 assets = [
-    ["target/release/sshpass", "usr/bin/", "755"],
-    ["packaging/sshpass.desktop", "usr/share/applications/", "644"],
-    ["packaging/sshpass.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
-    ["README.md", "usr/share/doc/sshpass/README.md", "644"],
+    ["target/release/sshpass-gui", "usr/bin/", "755"],
+    ["packaging/sshpass-gui.desktop", "usr/share/applications/", "644"],
+    ["packaging/sshpass-gui.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["README.md", "usr/share/doc/sshpass-gui/README.md", "644"],
 ]
 
 # ---------------------------------------------------------------------------
@@ -83,11 +83,11 @@ assets = [
 summary = "Gestionnaire de connexions SSH avec terminal integre et Proton Pass"
 auto-req = "builtin"
 assets = [
-    { source = "target/release/sshpass", dest = "/usr/bin/sshpass", mode = "755" },
-    { source = "packaging/sshpass.desktop", dest = "/usr/share/applications/sshpass.desktop", mode = "644" },
-    { source = "packaging/sshpass.png", dest = "/usr/share/icons/hicolor/256x256/apps/sshpass.png", mode = "644" },
-    { source = "README.md", dest = "/usr/share/doc/sshpass/README.md", mode = "644", doc = true },
-        { source = "LICENSE", dest = "/usr/share/doc/sshpass/LICENSE", mode = "644", doc = true },
+    { source = "target/release/sshpass-gui", dest = "/usr/bin/sshpass-gui", mode = "755" },
+    { source = "packaging/sshpass-gui.desktop", dest = "/usr/share/applications/sshpass-gui.desktop", mode = "644" },
+    { source = "packaging/sshpass-gui.png", dest = "/usr/share/icons/hicolor/256x256/apps/sshpass-gui.png", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/sshpass-gui/README.md", mode = "644", doc = true },
+            { source = "LICENSE", dest = "/usr/share/doc/sshpass-gui/LICENSE", mode = "644", doc = true },
 ]
 
 [package.metadata.generate-rpm.requires]

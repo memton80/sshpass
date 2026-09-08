@@ -7,7 +7,7 @@
 use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, Stroke};
 
 /// Famille egui pour le texte du terminal en gras.
-pub const MONO_BOLD: &str = "sshpass-mono-bold";
+pub const MONO_BOLD: &str = "sshpass-gui-mono-bold";
 
 /// Palette de l'interface. Violet/gris sombre, dans l'esprit de SSH Pilot.
 #[derive(Debug, Clone, Copy)]
@@ -145,13 +145,13 @@ pub fn install_system_fonts(ctx: &egui::Context) {
 
     let faces = [
         (
-            "sshpass-sans",
+            "sshpass-gui-sans",
             fontdb::Family::SansSerif,
             fontdb::Weight::NORMAL,
             FontFamily::Proportional,
         ),
         (
-            "sshpass-mono",
+            "sshpass-gui-mono",
             fontdb::Family::Monospace,
             fontdb::Weight::NORMAL,
             FontFamily::Monospace,
@@ -187,7 +187,7 @@ pub fn install_system_fonts(ctx: &egui::Context) {
             .families
             .get(&FontFamily::Monospace)
             .and_then(|f| f.first().cloned())
-            .unwrap_or_else(|| "sshpass-mono".to_string())
+            .unwrap_or_else(|| "sshpass-gui-mono".to_string())
     };
     let mut bold_stack = vec![bold_key];
     if let Some(mono) = definitions.families.get(&FontFamily::Monospace) {

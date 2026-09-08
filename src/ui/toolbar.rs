@@ -26,7 +26,7 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                     palette.accent_soft,
                 );
                 ui.add_space(6.0);
-                ui.label(RichText::new("sshpass").strong().size(15.0));
+                ui.label(RichText::new("sshpass-gui").strong().size(15.0));
                 ui.add_space(12.0);
 
                 if ui

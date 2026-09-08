@@ -4,8 +4,13 @@
 
 ## Decision
 
-**TOML**, dans `$XDG_CONFIG_HOME/sshpass/config.toml`
-(surchargeable par la variable d'environnement `SSHPASS_CONFIG`).
+**TOML**, dans `$XDG_CONFIG_HOME/sshpass-gui/config.toml`
+(surchargeable par la variable d'environnement `SSHPASS_GUI_CONFIG`).
+
+Le repertoire s'appelait `sshpass` avant le renommage du projet en
+`sshpass-gui` (cf. [ADR 0006](0006-renommage-sshpass-gui.md)). Une
+configuration ecrite a l'ancien emplacement est copiee vers le nouveau au
+premier demarrage, l'original restant en place.
 
 ## Regle non negociable
 

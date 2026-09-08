@@ -62,7 +62,7 @@ jobs:
       # Un binaire qui compile mais panique au demarrage passerait sinon
       # inapercu: on ouvre reellement la fenetre sur un serveur X virtuel.
       - name: Test de demarrage headless
-        run: ./.github/scripts/smoke-test.sh target/release/sshpass
+        run: ./.github/scripts/smoke-test.sh target/release/sshpass-gui
 
       - name: Paquet Debian
         run: cargo deb --no-build
@@ -86,32 +86,32 @@ jobs:
           chmod +x linuxdeploy linuxdeploy-plugin-appimage
           export PATH="$PWD:$PATH"
           ./linuxdeploy --appdir AppDir \
-            -e target/release/sshpass \
-            -d packaging/sshpass.desktop \
-            -i packaging/sshpass.png
+            -e target/release/sshpass-gui \
+            -d packaging/sshpass-gui.desktop \
+            -i packaging/sshpass-gui.png
           version=$(cargo metadata --no-deps --format-version 1 \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
-          OUTPUT="sshpass-${version}-x86_64.AppImage" ./linuxdeploy-plugin-appimage --appdir AppDir
+          OUTPUT="sshpass-gui-${version}-x86_64.AppImage" ./linuxdeploy-plugin-appimage --appdir AppDir
 
       # Meme exigence pour l'AppImage que pour le binaire nu: elle doit
       # demarrer, pas seulement se construire.
       - name: Test de demarrage de l'AppImage
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1
-        run: ./.github/scripts/smoke-test.sh ./sshpass-*-x86_64.AppImage
+        run: ./.github/scripts/smoke-test.sh ./sshpass-gui-*-x86_64.AppImage
 
       - name: Recapitulatif des paquets
         run: |
           mkdir -p dist
-          cp target/release/sshpass dist/sshpass-x86_64-linux
+          cp target/release/sshpass-gui dist/sshpass-gui-x86_64-linux
           cp target/debian/*.deb dist/
           cp target/generate-rpm/*.rpm dist/
-          cp sshpass-*-x86_64.AppImage dist/
+          cp sshpass-gui-*-x86_64.AppImage dist/
           ls -la dist/
           for f in dist/*; do echo "--- $f"; file -b "$f"; done
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sshpass-linux-x86_64
+          name: sshpass-gui-linux-x86_64
           path: dist/*
           if-no-files-found: error

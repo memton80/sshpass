@@ -51,7 +51,7 @@ fn base_env() -> HashMap<String, String> {
         // ferait mal afficher les applications distantes.
         ("TERM".to_string(), "xterm-256color".to_string()),
         ("COLORTERM".to_string(), "truecolor".to_string()),
-        ("TERM_PROGRAM".to_string(), "sshpass".to_string()),
+        ("TERM_PROGRAM".to_string(), "sshpass-gui".to_string()),
     ])
 }
 
@@ -163,6 +163,10 @@ mod tests {
             spec.env.get("TERM").map(String::as_str),
             Some("xterm-256color")
         );
+        assert_eq!(
+            spec.env.get("TERM_PROGRAM").map(String::as_str),
+            Some("sshpass-gui")
+        );
         assert!(!spec.env.contains_key("SSH_AUTH_SOCK"));
     }
 
@@ -178,13 +182,13 @@ mod tests {
     #[test]
     fn agent_socket_is_exported() {
         let context = SessionContext {
-            agent_socket: Some(PathBuf::from("/run/sshpass/agent.sock")),
+            agent_socket: Some(PathBuf::from("/run/sshpass-gui/agent.sock")),
             ..Default::default()
         };
         let spec = build_ssh(&connection(), &context);
         assert_eq!(
             spec.env.get("SSH_AUTH_SOCK").map(String::as_str),
-            Some("/run/sshpass/agent.sock")
+            Some("/run/sshpass-gui/agent.sock")
         );
     }
 
@@ -220,13 +224,13 @@ mod tests {
             field: Some("password".into()),
         });
         let context = SessionContext {
-            askpass_script: Some(PathBuf::from("/run/sshpass/askpass-1.sh")),
+            askpass_script: Some(PathBuf::from("/run/sshpass-gui/askpass-1.sh")),
             ..Default::default()
         };
         let spec = build_ssh(&conn, &context);
         assert_eq!(
             spec.env.get("SSH_ASKPASS").map(String::as_str),
-            Some("/run/sshpass/askpass-1.sh")
+            Some("/run/sshpass-gui/askpass-1.sh")
         );
         assert_eq!(
             spec.env.get("SSH_ASKPASS_REQUIRE").map(String::as_str),

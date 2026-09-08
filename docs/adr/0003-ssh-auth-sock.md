@@ -16,8 +16,8 @@ trois modes selectionnables dans les reglages (`config::AgentMode`):
 
 | Mode | Comportement |
 | --- | --- |
-| `own-agent` *(defaut)* | sshpass supervise un `pass-cli ssh-agent start` par coffre, sur `$XDG_RUNTIME_DIR/sshpass/agent-<coffre>-<hash>.sock`. Chaque onglet recoit dans son environnement le `SSH_AUTH_SOCK` de l'agent du coffre associe a sa connexion. |
-| `load-into-existing` | `pass-cli ssh-agent load` pousse les cles dans l'agent deja reference par `SSH_AUTH_SOCK`; sshpass ne surcharge rien. |
+| `own-agent` *(defaut)* | sshpass-gui supervise un `pass-cli ssh-agent start` par coffre, sur `$XDG_RUNTIME_DIR/sshpass-gui/agent-<coffre>-<hash>.sock`. Chaque onglet recoit dans son environnement le `SSH_AUTH_SOCK` de l'agent du coffre associe a sa connexion. |
+| `load-into-existing` | `pass-cli ssh-agent load` pousse les cles dans l'agent deja reference par `SSH_AUTH_SOCK`; sshpass-gui ne surcharge rien. |
 | `disabled` | Les onglets heritent simplement de l'environnement. |
 
 ## Justification
@@ -39,12 +39,12 @@ trois modes selectionnables dans les reglages (`config::AgentMode`):
 
 ## Mots de passe: `SSH_ASKPASS`, jamais le PTY
 
-Pour `auth = "password"`, sshpass **ne lit pas** le secret. Il ecrit un script
+Pour `auth = "password"`, sshpass-gui **ne lit pas** le secret. Il ecrit un script
 `SSH_ASKPASS` (mode 0700, dans le repertoire volatil) qui contient seulement
 l'URI `pass://...`, puis pose `SSH_ASKPASS_REQUIRE=force`. C'est `ssh` qui
 execute le script et lit sa sortie.
 
-Consequence: le mot de passe ne transite ni par la memoire de sshpass, ni par le
+Consequence: le mot de passe ne transite ni par la memoire de sshpass-gui, ni par le
 PTY, ni par les journaux. Aucune methode du module `pass` ne lit de secret.
 `SSH_ASKPASS_REQUIRE=force` demande OpenSSH 8.4 ou plus recent.
 

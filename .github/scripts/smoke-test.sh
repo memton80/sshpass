@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verifie qu'une build de sshpass demarre reellement: la fenetre s'ouvre, les
+# Verifie qu'une build de sshpass-gui demarre reellement: la fenetre s'ouvre, les
 # polices systeme se chargent, la boucle de rendu tourne. Un binaire qui
 # compile mais panique au lancement passerait sinon inapercu.
 #
@@ -12,8 +12,8 @@ seconds=${SMOKE_SECONDS:-15}
 # Configuration jetable: le test ne doit dependre d'aucun profil existant, ni
 # laisser de trace derriere lui.
 workdir=$(mktemp -d)
-export SSHPASS_CONFIG="$workdir/config.toml"
-printf 'version = 1\n' > "$SSHPASS_CONFIG"
+export SSHPASS_GUI_CONFIG="$workdir/config.toml"
+printf 'version = 1\n' > "$SSHPASS_GUI_CONFIG"
 
 pid=""
 cleanup() {

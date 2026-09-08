@@ -2,14 +2,14 @@
 //!
 //! Trois modes coexistent (cf. `AgentMode`):
 //!
-//! * `OwnAgent` — sshpass demarre un `pass-cli ssh-agent start` **par coffre**,
+//! * `OwnAgent` — sshpass-gui demarre un `pass-cli ssh-agent start` **par coffre**,
 //!   sur une socket qui lui est propre. Chaque onglet terminal recoit dans son
 //!   environnement le `SSH_AUTH_SOCK` de l'agent du coffre associe a sa
 //!   connexion. Un coffre = un agent = une socket, partage par tous les
 //!   onglets qui l'utilisent: demarrer un agent par onglet multiplierait les
 //!   deverrouillages de session pour rien.
 //! * `LoadIntoExisting` — `pass-cli ssh-agent load` pousse les cles dans
-//!   l'agent deja reference par `SSH_AUTH_SOCK`; sshpass ne surcharge alors
+//!   l'agent deja reference par `SSH_AUTH_SOCK`; sshpass-gui ne surcharge alors
 //!   aucune variable.
 //! * `Disabled` — les onglets heritent simplement de l'environnement.
 

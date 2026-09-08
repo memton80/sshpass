@@ -24,7 +24,7 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
         );
 
         ui.add_space(12.0);
-        ui.label(RichText::new("sshpass").size(26.0).strong());
+        ui.label(RichText::new("sshpass-gui").size(26.0).strong());
         ui.label(
             RichText::new("Connexions SSH et secrets Proton Pass")
                 .size(13.0)

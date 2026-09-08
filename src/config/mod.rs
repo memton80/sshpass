@@ -1,7 +1,8 @@
 //! Modele de donnees et persistance de la configuration.
 //!
 //! Le fichier de configuration est un TOML stocke dans
-//! `$XDG_CONFIG_HOME/sshpass/config.toml` (surchargeable via `SSHPASS_CONFIG`).
+//! `$XDG_CONFIG_HOME/sshpass-gui/config.toml`, surchargeable via la variable
+//! d'environnement `SSHPASS_GUI_CONFIG`.
 //!
 //! Regle absolue: **aucun secret n'est ecrit dans ce fichier**. Les mots de
 //! passe et les cles SSH restent dans Proton Pass; on ne stocke que des
@@ -76,7 +77,7 @@ impl Default for UiConfig {
 pub enum AgentMode {
     /// Aucune integration: on herite du `SSH_AUTH_SOCK` de l'environnement.
     Disabled,
-    /// `pass-cli ssh-agent start` est pilote par sshpass, un agent par coffre.
+    /// `pass-cli ssh-agent start` est pilote par sshpass-gui, un agent par coffre.
     #[default]
     OwnAgent,
     /// `pass-cli ssh-agent load` injecte les cles dans l'agent deja en place.
@@ -343,17 +344,51 @@ impl Config {
 
 /// Chemin du fichier de configuration.
 pub fn config_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("SSHPASS_CONFIG") {
+    if let Some(path) = std::env::var_os("SSHPASS_GUI_CONFIG") {
         return PathBuf::from(path);
     }
     config_dir().join("config.toml")
 }
 
-/// Repertoire de configuration (`~/.config/sshpass` sous Linux).
+/// Repertoire de configuration (`~/.config/sshpass-gui` sous Linux).
 pub fn config_dir() -> PathBuf {
-    directories::ProjectDirs::from("", "", "sshpass")
+    project_config_dir("sshpass-gui")
+}
+
+/// Repertoire utilise avant le renommage en `sshpass-gui`.
+fn legacy_config_dir() -> PathBuf {
+    project_config_dir("sshpass")
+}
+
+fn project_config_dir(name: &str) -> PathBuf {
+    directories::ProjectDirs::from("", "", name)
         .map(|d| d.config_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(".config/sshpass"))
+        .unwrap_or_else(|| PathBuf::from(".config").join(name))
+}
+
+/// Reprend une configuration ecrite avant le renommage en `sshpass-gui`.
+///
+/// Copie plutot que deplacement: en cas de retour en arriere, l'ancien
+/// fichier est toujours la. Renvoie le chemin repris, s'il y en a eu un.
+pub fn adopt_legacy_config() -> anyhow::Result<Option<PathBuf>> {
+    // Un chemin impose explicitement n'a pas a etre ecrase par une reprise.
+    if std::env::var_os("SSHPASS_GUI_CONFIG").is_some() {
+        return Ok(None);
+    }
+    adopt_config_from(&legacy_config_dir().join("config.toml"), &config_path())
+}
+
+/// Coeur testable de la reprise: ne fait rien si la cible existe deja ou si
+/// la source est absente.
+fn adopt_config_from(legacy: &Path, target: &Path) -> anyhow::Result<Option<PathBuf>> {
+    if target.exists() || !legacy.exists() {
+        return Ok(None);
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(legacy, target)?;
+    Ok(Some(legacy.to_path_buf()))
 }
 
 /// Repertoire volatil pour les sockets d'agent et les scripts askpass.
@@ -361,7 +396,7 @@ pub fn runtime_dir() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    base.join("sshpass")
+    base.join("sshpass-gui")
 }
 
 pub fn now_secs() -> u64 {
@@ -445,6 +480,44 @@ mod tests {
         config.folders.push(folder);
         config.connections.push(conn);
         config
+    }
+
+    #[test]
+    fn legacy_config_is_adopted_once() {
+        let root = std::env::temp_dir().join(format!("sshpass-gui-adopt-{}", std::process::id()));
+        let legacy = root.join("ancien/config.toml");
+        let target = root.join("nouveau/config.toml");
+        std::fs::create_dir_all(legacy.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&legacy, "version = 1\n").expect("ecriture");
+
+        let adopted = adopt_config_from(&legacy, &target).expect("reprise");
+        assert_eq!(adopted.as_deref(), Some(legacy.as_path()));
+        assert!(target.exists(), "la configuration doit avoir ete copiee");
+        assert!(legacy.exists(), "l'ancienne doit rester en place");
+
+        // Deuxieme passage: la cible existe, on n'ecrase rien.
+        std::fs::write(&target, "version = 1\n# modifiee\n").expect("ecriture");
+        assert_eq!(adopt_config_from(&legacy, &target).expect("reprise"), None);
+        assert!(std::fs::read_to_string(&target)
+            .expect("lecture")
+            .contains("modifiee"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adoption_without_legacy_is_a_no_op() {
+        let root = std::env::temp_dir().join(format!("sshpass-gui-noadopt-{}", std::process::id()));
+        let result = adopt_config_from(&root.join("absent.toml"), &root.join("cible.toml"))
+            .expect("reprise");
+        assert_eq!(result, None);
+        assert!(!root.join("cible.toml").exists());
+    }
+
+    #[test]
+    fn config_directories_are_distinct() {
+        assert_ne!(config_dir(), legacy_config_dir());
+        assert!(config_dir().ends_with("sshpass-gui"));
     }
 
     #[test]

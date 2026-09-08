@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Genere l'icone de l'application a partir du sprite pixel art du terminal.
+"""Genere l'icone de sshpass-gui a partir du sprite pixel art du terminal.
 
 L'icone n'est pas dessinee a la main: elle est rasterisee depuis la meme grille
 8x8 que `src/ui/pixel.rs`, avec la palette de `src/theme.rs`. Regenerer apres
@@ -83,7 +83,7 @@ def write_png(path: Path, pixels: list[list[tuple[int, int, int, int]]]) -> None
 
 
 def main() -> int:
-    target = Path(__file__).resolve().parent / "sshpass.png"
+    target = Path(__file__).resolve().parent / "sshpass-gui.png"
     write_png(target, render())
     print(f"{target} ecrit ({target.stat().st_size} octets, {SIZE}x{SIZE})")
     return 0

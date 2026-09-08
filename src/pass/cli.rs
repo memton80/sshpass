@@ -161,7 +161,7 @@ impl PassCli {
 
     // Note: aucune methode ne lit un secret. Les mots de passe sont fournis a
     // `ssh` par le script SSH_ASKPASS (cf. `pass::write_askpass_script`), qui
-    // execute `pass-cli` lui-meme: la valeur ne transite jamais par sshpass.
+    // execute `pass-cli` lui-meme: la valeur ne transite jamais par sshpass-gui.
 
     /// Execute `pass-cli` et renvoie sa sortie standard.
     fn run(&self, args: &[String]) -> Result<String> {

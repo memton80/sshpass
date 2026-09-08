@@ -1,4 +1,4 @@
-# sshpass
+# sshpass-gui
 
 Gestionnaire de connexions SSH avec terminal integre, **100 % Rust natif**,
 adosse a **Proton Pass** pour les cles et les secrets.
@@ -64,7 +64,7 @@ correspondants suffisent (`libxkbcommon-x11-0`, `libwayland-client0`, `libgl1`,
 
 ```bash
 cargo build --release
-./target/release/sshpass
+./target/release/sshpass-gui
 ```
 
 Rust 1.92 ou plus recent.
@@ -76,10 +76,10 @@ Chaque push produit les quatre formats en artefacts de la CI
 
 | Format | Fichier | Construit par |
 | --- | --- | --- |
-| Binaire Linux | `sshpass-x86_64-linux` | `cargo build --release` |
-| Debian / Ubuntu | `sshpass_<version>-1_amd64.deb` | [`cargo-deb`](https://github.com/kornelski/cargo-deb) |
-| Fedora / openSUSE | `sshpass-<version>-1.x86_64.rpm` | [`cargo-generate-rpm`](https://github.com/cat-in-136/cargo-generate-rpm) |
-| Portable | `sshpass-<version>-x86_64.AppImage` | [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy) |
+| Binaire Linux | `sshpass-gui-x86_64-linux` | `cargo build --release` |
+| Debian / Ubuntu | `sshpass-gui_<version>-1_amd64.deb` | [`cargo-deb`](https://github.com/kornelski/cargo-deb) |
+| Fedora / openSUSE | `sshpass-gui-<version>-1.x86_64.rpm` | [`cargo-generate-rpm`](https://github.com/cat-in-136/cargo-generate-rpm) |
+| Portable | `sshpass-gui-<version>-x86_64.AppImage` | [`linuxdeploy`](https://github.com/linuxdeploy/linuxdeploy) |
 
 Les reconstruire en local :
 
@@ -104,41 +104,30 @@ Fedora et openSUSE). Pour verifier la liste apres une montee de version d'egui
 ou de winit :
 
 ```bash
-strings -a target/release/sshpass | grep -oE 'lib[A-Za-z0-9_-]+\.so(\.[0-9]+)+' | sort -u
+strings -a target/release/sshpass-gui | grep -oE 'lib[A-Za-z0-9_-]+\.so(\.[0-9]+)+' | sort -u
 ```
 
 L'AppImage n'embarque aucune de ces bibliotheques : elles figurent toutes sur
 la liste d'exclusion AppImage (pilotes graphiques et bibliotheques systeme, qui
 doivent venir de l'hote).
 
-### Conflit de nom a connaitre
+### Pourquoi `sshpass-gui` et non `sshpass`
 
-> Debian et Ubuntu distribuent deja un paquet **`sshpass`** : l'outil en ligne
-> de commande qui fournit un mot de passe a `ssh` de maniere non interactive
-> (version 1.09 dans `noble/universe`). Il n'a aucun rapport avec ce projet,
-> mais il porte le meme nom **et** installe le meme chemin `/usr/bin/sshpass`.
->
-> Consequences concretes : les deux paquets ne peuvent pas coexister, et comme
-> `1.09 > 0.1.0`, un `apt upgrade` remplacerait cette application par l'outil
-> en ligne de commande.
->
-> Si vous comptez distribuer le `.deb`, renommez le paquet. Une seule ligne
-> dans `[package.metadata.deb]` suffit pour le nom du paquet :
->
-> ```toml
-> name = "sshpass-gui"
-> ```
->
-> Le nom du binaire, lui, se change avec une section `[[bin]]` :
->
-> ```toml
-> [[bin]]
-> name = "sshpass-gui"
-> path = "src/main.rs"
-> ```
->
-> (il faudra alors ajuster `Exec=` dans `packaging/sshpass.desktop` et les
-> chemins des `assets`). L'AppImage n'est pas concernee.
+Debian et Ubuntu distribuent deja un paquet **`sshpass`** : l'outil en ligne
+de commande qui fournit un mot de passe a `ssh` de maniere non interactive
+(version 1.09 dans `noble/universe`). Il n'a aucun rapport avec ce projet,
+mais il porterait le meme nom **et** installerait le meme
+`/usr/bin/sshpass` : les deux paquets ne pourraient pas coexister, et comme
+`1.09 > 0.1.0`, un `apt upgrade` remplacerait cette application par l'outil
+en ligne de commande.
+
+D'ou le nom `sshpass-gui` pour la caisse, le binaire, les paquets et le
+fichier `.desktop` — voir [ADR 0006](docs/adr/0006-renommage-sshpass-gui.md).
+Le depot, lui, garde son nom.
+
+Une configuration ecrite avant ce renommage, dans `~/.config/sshpass/`, est
+**reprise automatiquement** au premier demarrage : elle est copiee vers
+`~/.config/sshpass-gui/`, l'original restant en place.
 
 ### Icone et fichier `.desktop`
 
@@ -155,36 +144,36 @@ python3 packaging/generate-icon.py
 ### Premier lancement
 
 Sans configuration, l'accueil propose de creer une connexion. Le fichier est
-ecrit dans `~/.config/sshpass/config.toml` a la premiere sauvegarde.
+ecrit dans `~/.config/sshpass-gui/config.toml` a la premiere sauvegarde.
 
 Pour travailler sur une configuration de test :
 
 ```bash
-SSHPASS_CONFIG=/tmp/essai.toml ./target/release/sshpass
+SSHPASS_GUI_CONFIG=/tmp/essai.toml ./target/release/sshpass-gui
 ```
 
 ### Proton Pass
 
-sshpass appelle le binaire `pass-cli` (configurable dans les reglages). La
+sshpass-gui appelle le binaire `pass-cli` (configurable dans les reglages). La
 pastille de la barre d'outils indique s'il est detecte ; un clic relance la
 detection.
 
 Trois modes d'agent, au choix dans les reglages :
 
-* **Agent dedie** *(defaut)* — sshpass demarre un `pass-cli ssh-agent start` par
+* **Agent dedie** *(defaut)* — sshpass-gui demarre un `pass-cli ssh-agent start` par
   coffre et injecte le `SSH_AUTH_SOCK` correspondant dans chaque onglet.
 * **Agent existant** — `pass-cli ssh-agent load` pousse les cles dans l'agent
-  deja en place ; sshpass ne surcharge rien.
+  deja en place ; sshpass-gui ne surcharge rien.
 * **Desactive** — les onglets heritent de l'environnement.
 
 Detail de la strategie : [ADR 0003](docs/adr/0003-ssh-auth-sock.md).
 
 ### Mots de passe
 
-Pour une connexion en `auth = "password"`, sshpass **ne lit jamais le secret**.
+Pour une connexion en `auth = "password"`, sshpass-gui **ne lit jamais le secret**.
 Il ecrit un script `SSH_ASKPASS` (mode 0700) qui ne contient que l'URI
 `pass://coffre/item/champ`, et laisse `ssh` l'executer lui-meme. Le mot de passe
-ne passe donc ni par la memoire de sshpass, ni par le PTY, ni par les journaux.
+ne passe donc ni par la memoire de sshpass-gui, ni par le PTY, ni par les journaux.
 
 Necessite OpenSSH 8.4 ou plus recent (pour `SSH_ASKPASS_REQUIRE=force`).
 
@@ -246,7 +235,7 @@ cargo fmt --all -- --check
 Essayer l'interface sans serveur d'affichage :
 
 ```bash
-xvfb-run -a --server-args="-screen 0 1280x800x24" ./target/debug/sshpass
+xvfb-run -a --server-args="-screen 0 1280x800x24" ./target/debug/sshpass-gui
 ```
 
 ### Organisation
