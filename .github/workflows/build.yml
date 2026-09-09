@@ -1,0 +1,117 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    name: Format, lint et tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependances systeme
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libx11-xcb-dev libxcb-xkb-dev \
+            libgl1-mesa-dev libfontconfig1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-targets
+
+  linux:
+    name: Linux — binaire, .deb, .rpm et AppImage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependances systeme
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libx11-xcb-dev libxcb-xkb-dev \
+            libgl1-mesa-dev libfontconfig1-dev pkg-config \
+            xvfb fonts-dejavu-core file
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Outils de packaging
+        run: cargo install --locked cargo-deb cargo-generate-rpm
+
+      - name: cargo build --release
+        run: cargo build --release
+
+      # Un binaire qui compile mais panique au demarrage passerait sinon
+      # inapercu: on ouvre reellement la fenetre sur un serveur X virtuel.
+      - name: Test de demarrage headless
+        run: ./.github/scripts/smoke-test.sh target/release/sshpass-gui
+
+      - name: Paquet Debian
+        run: cargo deb --no-build
+
+      - name: Paquet RPM
+        run: cargo generate-rpm
+
+      - name: AppImage
+        env:
+          # Les runners GitHub n'ont pas FUSE: les outils AppImage doivent
+          # s'extraire eux-memes au lieu de se monter.
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          ARCH: x86_64
+        run: |
+          set -eu
+          base=https://github.com/linuxdeploy
+          curl -fsSLo linuxdeploy \
+            "$base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+          curl -fsSLo linuxdeploy-plugin-appimage \
+            "$base/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
+          chmod +x linuxdeploy linuxdeploy-plugin-appimage
+          export PATH="$PWD:$PATH"
+          ./linuxdeploy --appdir AppDir \
+            -e target/release/sshpass-gui \
+            -d packaging/sshpass-gui.desktop \
+            -i packaging/sshpass-gui.png
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          OUTPUT="sshpass-gui-${version}-x86_64.AppImage" ./linuxdeploy-plugin-appimage --appdir AppDir
+
+      # Meme exigence pour l'AppImage que pour le binaire nu: elle doit
+      # demarrer, pas seulement se construire.
+      - name: Test de demarrage de l'AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: ./.github/scripts/smoke-test.sh ./sshpass-gui-*-x86_64.AppImage
+
+      - name: Recapitulatif des paquets
+        run: |
+          mkdir -p dist
+          cp target/release/sshpass-gui dist/sshpass-gui-x86_64-linux
+          cp target/debian/*.deb dist/
+          cp target/generate-rpm/*.rpm dist/
+          cp sshpass-gui-*-x86_64.AppImage dist/
+          ls -la dist/
+          for f in dist/*; do echo "--- $f"; file -b "$f"; done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sshpass-gui-linux-x86_64
+          path: dist/*
+          if-no-files-found: error

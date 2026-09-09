@@ -1,0 +1,110 @@
+[package]
+name = "sshpass-gui"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+description = "Gestionnaire de connexions SSH 100% Rust natif, terminal integre et coffre Proton Pass"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/memton80/sshpass"
+readme = "README.md"
+authors = ["memton80"]
+keywords = ["ssh", "terminal", "proton-pass", "gui"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+# GUI: egui / eframe en backend glow (OpenGL). Pas de GTK/Qt, pas de webview.
+eframe = { version = "0.35", default-features = false, features = [
+    "glow",
+    "wayland",
+    "x11",
+    "default_fonts",
+] }
+egui = "0.35"
+
+# Emulation VT100/xterm pure Rust (pas de libvte).
+alacritty_terminal = "0.26"
+
+# Polices systeme (pure Rust, pas de font-kit/freetype).
+fontdb = "0.24"
+
+# Config / serialisation
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+directories = "6"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Divers
+anyhow = "1"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+
+# ---------------------------------------------------------------------------
+# Paquet Debian/Ubuntu — `cargo deb`
+#
+# `$auto` ne suffit pas ici: winit, glutin et xkbcommon-dl chargent leurs
+# bibliotheques par `dlopen`, pas par edition de liens. Le binaire ne
+# declare donc que libc/libm/libgcc, et dpkg-shlibdeps ne voit rien
+# d'autre — un paquet installe sur un systeme sans libxkbcommon-x11
+# paniquerait au demarrage. Les bibliotheques ouvertes dynamiquement sont
+# listees a la main; la liste se verifie avec:
+#     strings -a target/release/sshpass-gui | grep -oE "lib[A-Za-z0-9_-]+\.so(\.[0-9]+)+"
+# ---------------------------------------------------------------------------
+[package.metadata.deb]
+maintainer = "memton80 <memton80@users.noreply.github.com>"
+copyright = "2026 contributeurs de sshpass-gui"
+license-file = ["LICENSE", "0"]
+section = "net"
+priority = "optional"
+depends = "$auto, libgl1, libegl1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrender1"
+recommends = "openssh-client"
+extended-description = """\
+Gestionnaire de connexions SSH 100% Rust natif, avec terminal integre.
+Ni Electron, ni webview, ni GTK, ni Qt. Les cles et mots de passe restent
+dans Proton Pass: la configuration ne stocke que des references."""
+assets = [
+    ["target/release/sshpass-gui", "usr/bin/", "755"],
+    ["packaging/sshpass-gui.desktop", "usr/share/applications/", "644"],
+    ["packaging/sshpass-gui.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["README.md", "usr/share/doc/sshpass-gui/README.md", "644"],
+]
+
+# ---------------------------------------------------------------------------
+# Paquet RPM (Fedora/openSUSE) — `cargo generate-rpm`
+#
+# `auto-req = "builtin"` deduit les dependances en lisant l'ELF, sans avoir
+# besoin des outils rpm de la distribution: c'est ce qui permet de produire
+# le RPM depuis un runner Ubuntu. Comme pour le .deb, il ne voit pas les
+# bibliotheques ouvertes par `dlopen`: elles sont declarees par soname
+# plutot que par nom de paquet, les noms differant entre Fedora et openSUSE.
+# ---------------------------------------------------------------------------
+[package.metadata.generate-rpm]
+summary = "Gestionnaire de connexions SSH avec terminal integre et Proton Pass"
+auto-req = "builtin"
+assets = [
+    { source = "target/release/sshpass-gui", dest = "/usr/bin/sshpass-gui", mode = "755" },
+    { source = "packaging/sshpass-gui.desktop", dest = "/usr/share/applications/sshpass-gui.desktop", mode = "644" },
+    { source = "packaging/sshpass-gui.png", dest = "/usr/share/icons/hicolor/256x256/apps/sshpass-gui.png", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/sshpass-gui/README.md", mode = "644", doc = true },
+            { source = "LICENSE", dest = "/usr/share/doc/sshpass-gui/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+"libGL.so.1()(64bit)" = "*"
+"libEGL.so.1()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+"libwayland-client.so.0()(64bit)" = "*"
+"libwayland-egl.so.1()(64bit)" = "*"
+"libX11.so.6()(64bit)" = "*"
+"libX11-xcb.so.1()(64bit)" = "*"
+"libXcursor.so.1()(64bit)" = "*"
+"libXi.so.6()(64bit)" = "*"
+"libXrender.so.1()(64bit)" = "*"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
