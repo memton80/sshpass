@@ -34,6 +34,25 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
 
+      # Les metadonnees des logitheques sont un fichier qu'aucun test Rust ne
+      # touche: une faute de frappe n'apparaitrait qu'apres installation, dans
+      # Discover. On les valide donc ici, avec les outils de reference.
+      - name: Metadonnees des logitheques
+        run: |
+          sudo apt-get install -y --no-install-recommends appstream desktop-file-utils
+          desktop-file-validate packaging/sshpass-gui.desktop
+          appstreamcli validate --no-net --pedantic \
+            packaging/io.github.memton80.sshpass-gui.metainfo.xml
+          # La version annoncee aux logitheques doit suivre celle de la caisse,
+          # sinon la logitheque affiche une version et le paquet une autre.
+          crate=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          if ! grep -q "<release version=\"$crate\"" \
+              packaging/io.github.memton80.sshpass-gui.metainfo.xml; then
+            echo "::error::metainfo sans entree <release> pour la version $crate"
+            exit 1
+          fi
+
   linux:
     name: Linux — binaire, .deb, .rpm et AppImage
     runs-on: ubuntu-latest
@@ -47,7 +66,7 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libx11-dev libx11-xcb-dev libxcb-xkb-dev \
             libgl1-mesa-dev libfontconfig1-dev pkg-config \
-            xvfb fonts-dejavu-core file
+            xvfb fonts-dejavu-core file rpm
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -85,6 +104,11 @@ jobs:
             "$base/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
           chmod +x linuxdeploy linuxdeploy-plugin-appimage
           export PATH="$PWD:$PATH"
+          # linuxdeploy ne connait que binaire, .desktop et icone: le
+          # metainfo est depose a la main, a l'emplacement ou les logitheques
+          # le cherchent une fois l'AppImage integree.
+          install -Dm644 packaging/io.github.memton80.sshpass-gui.metainfo.xml \
+            AppDir/usr/share/metainfo/io.github.memton80.sshpass-gui.metainfo.xml
           ./linuxdeploy --appdir AppDir \
             -e target/release/sshpass-gui \
             -d packaging/sshpass-gui.desktop \
@@ -109,6 +133,22 @@ jobs:
           cp sshpass-gui-*-x86_64.AppImage dist/
           ls -la dist/
           for f in dist/*; do echo "--- $f"; file -b "$f"; done
+
+      # Un asset oublie dans Cargo.toml ne casse aucune compilation: il rend
+      # seulement l'application anonyme dans les logitheques. On verifie donc
+      # que le fichier est bien dans les paquets livres.
+      - name: Metadonnees presentes dans les paquets
+        run: |
+          set -euo pipefail
+          metainfo=usr/share/metainfo/io.github.memton80.sshpass-gui.metainfo.xml
+          # Sortie dans un fichier plutot que dans un tube: `grep -q` s'arrete
+          # des la premiere correspondance et tuerait l'outil en amont.
+          dpkg-deb --contents dist/*.deb > deb-contents.txt
+          rpm -qlp dist/*.rpm > rpm-contents.txt
+          grep -q "$metainfo" deb-contents.txt
+          grep -q "/$metainfo" rpm-contents.txt
+          echo "metainfo present dans le .deb et le .rpm"
+
 
       - uses: actions/upload-artifact@v4
         with:

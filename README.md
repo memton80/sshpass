@@ -98,6 +98,58 @@ cargo deb --no-build       # -> target/debian/
 cargo generate-rpm         # -> target/generate-rpm/
 ```
 
+### Metadonnees des logitheques
+
+`packaging/io.github.memton80.sshpass-gui.metainfo.xml` est le fichier
+**AppStream** installe dans `/usr/share/metainfo/` par le `.deb`, le `.rpm` et
+l'AppImage. C'est lui, et lui seul, que lisent KDE Discover, GNOME Logiciels et
+les autres logitheques pour afficher le nom, l'**auteur**, le resume, les
+captures et l'historique des versions. Sans lui, une logitheque ne dispose que
+du nom du paquet et affiche « Auteur inconnu ».
+
+Le resume court est repris a l'identique sur cinq surfaces — `description` de
+`Cargo.toml`, `summary` du RPM, `Comment` du `.desktop`, `<summary>` AppStream
+et la description du `.deb` — pour que l'application ne se decrive pas de deux
+facons selon l'outil qui l'affiche.
+
+Apres toute modification :
+
+```bash
+desktop-file-validate packaging/sshpass-gui.desktop
+appstreamcli validate --no-net --pedantic \
+  packaging/io.github.memton80.sshpass-gui.metainfo.xml
+```
+
+La CI rejoue ces deux validations, verifie que le metainfo contient bien une
+entree `<release>` pour la version de la caisse, et que le fichier est present
+dans le `.deb` et le `.rpm` livres. **Toute montee de version doit donc ajouter
+son `<release>`** dans le metainfo, sinon la CI echoue.
+
+Pour verifier ce qu'une logitheque affichera reellement :
+
+```bash
+sudo install -Dm644 packaging/io.github.memton80.sshpass-gui.metainfo.xml \
+  /usr/share/metainfo/io.github.memton80.sshpass-gui.metainfo.xml
+sudo appstreamcli refresh-cache --force
+appstreamcli dump io.github.memton80.sshpass-gui
+```
+
+#### Les permissions affichees
+
+Discover indique « Acces total — peut acceder a la totalite du systeme ». Ce
+n'est pas un oubli de metadonnee : c'est ce qu'affichent **tous** les paquets
+natifs (`.deb`, `.rpm`), qui ne sont pas places dans un bac a sable. Seuls
+Flatpak et Snap declarent des permissions fines, et un Flatpak n'aiderait pas
+ici : l'application lance `ssh` et `pass-cli` **de l'hote** et ouvre des
+sockets d'agent, ce qui exigerait `--talk-name=org.freedesktop.Flatpak`,
+c'est-a-dire une sortie de bac a sable — donc le meme « acces total », au prix
+d'un paquet plus fragile.
+
+Ce que l'application touche reellement est court : `~/.config/sshpass-gui/`
+pour sa configuration (jamais de secret), `$XDG_RUNTIME_DIR/sshpass-gui/` pour
+les sockets d'agent et les scripts askpass, et les processus `ssh` et
+`pass-cli`.
+
 ### Dependances declarees
 
 `winit`, `glutin` et `xkbcommon-dl` ouvrent leurs bibliotheques par `dlopen`,
@@ -125,9 +177,9 @@ Debian et Ubuntu distribuent deja un paquet **`sshpass`** : l'outil en ligne
 de commande qui fournit un mot de passe a `ssh` de maniere non interactive
 (version 1.09 dans `noble/universe`). Il n'a aucun rapport avec ce projet,
 mais il porterait le meme nom **et** installerait le meme
-`/usr/bin/sshpass` : les deux paquets ne pourraient pas coexister, et comme
-`1.09 > 0.1.0`, un `apt upgrade` remplacerait cette application par l'outil
-en ligne de commande.
+`/usr/bin/sshpass` : les deux paquets ne pourraient pas coexister, et un
+`apt upgrade` remplacerait l'un par l'autre selon lequel porte le plus grand
+numero de version.
 
 D'ou le nom `sshpass-gui` pour la caisse, le binaire, les paquets et le
 fichier `.desktop` — voir [ADR 0006](docs/adr/0006-renommage-sshpass-gui.md).
@@ -322,6 +374,7 @@ xvfb-run -a --server-args="-screen 0 1280x800x24" ./target/debug/sshpass-gui
 ### Organisation
 
 ```
+packaging/         .desktop, icone, metadonnees AppStream des logitheques
 src/
 ├── main.rs        point d'entree, chargement de la configuration
 ├── app.rs         etat global, boucle eframe, file d'actions
@@ -337,7 +390,9 @@ src/
 
 `.github/workflows/build.yml`, trois jobs :
 
-* **checks** — `cargo fmt --check`, `clippy -D warnings`, `cargo test`.
+* **checks** — `cargo fmt --check`, `clippy -D warnings`, `cargo test`, plus la
+  validation des metadonnees de logitheque (`desktop-file-validate`,
+  `appstreamcli validate --pedantic`, et la coherence de version).
 * **linux** — build release, puis `.deb`, `.rpm` et AppImage.
 
 Les binaires ne sont pas seulement compiles : `.github/scripts/smoke-test.sh`
