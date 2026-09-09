@@ -10,6 +10,8 @@ et une emulation de terminal en Rust pur.
 
 ![Terminal integre : couleurs ANSI, gras, souligne et historique](docs/captures/terminal.png)
 
+Journal des versions : [CHANGELOG.md](CHANGELOG.md).
+
 ## Ce que ca fait
 
 * **Barre laterale** : connexions, dossiers imbricables, favoris, recherche

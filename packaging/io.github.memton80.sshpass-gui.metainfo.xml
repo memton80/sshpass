@@ -135,12 +135,12 @@
         <p>Premiere version stable.</p>
         <p xml:lang="en">First stable release.</p>
         <ul>
-          <li>Mots de passe et cles SSH enregistres directement dans Proton Pass</li>
-          <li xml:lang="en">Passwords and SSH keys written straight into Proton Pass</li>
-          <li>Session Proton Pass surveillee et rouverte automatiquement</li>
-          <li xml:lang="en">The Proton Pass session is watched and reopened automatically</li>
-          <li>Metadonnees AppStream pour les logitheques</li>
-          <li xml:lang="en">AppStream metadata for software centres</li>
+          <li>Enregistrez le mot de passe d'un serveur dans Proton Pass depuis la fiche de connexion</li>
+          <li xml:lang="en">Save a server password into Proton Pass from the connection form</li>
+          <li>Generez une cle SSH dans votre coffre, ou importez-y une cle existante</li>
+          <li xml:lang="en">Generate an SSH key in your vault, or import an existing one</li>
+          <li>La connexion a Proton Pass se retablit toute seule apres un redemarrage</li>
+          <li xml:lang="en">The Proton Pass connection restores itself after a reboot</li>
         </ul>
       </description>
     </release>
