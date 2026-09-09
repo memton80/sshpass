@@ -2,12 +2,14 @@
 
 pub mod agent;
 pub mod cli;
+pub mod secret;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 pub use agent::{AgentManager, AgentState};
-pub use cli::{Item, PassCli, Vault};
+pub use cli::{Item, LoginDraft, PassCli, SshKeySource, SshKeyType, Vault};
+pub use secret::Secret;
 
 use crate::config::runtime_dir;
 
@@ -19,15 +21,53 @@ pub enum PassRequest {
     Vaults(PassCli),
     Items(PassCli, String),
     LoadAgent(PassCli, String),
+    /// Ecrit le mot de passe d'une connexion dans un coffre.
+    ///
+    /// Le secret voyage dans le `LoginDraft`, qui n'est ni clonable ni
+    /// affichable: il n'existe qu'ici, et il est detruit avec la requete.
+    SaveLogin {
+        cli: PassCli,
+        vault: String,
+        draft: LoginDraft,
+        /// Connexion a rattacher a l'item une fois celui-ci ecrit.
+        connection: String,
+        /// Un item de ce titre existe deja: mettre a jour plutot que creer.
+        /// Sans cela Proton Pass accepterait un doublon, et l'URI
+        /// `pass://coffre/titre` deviendrait ambigue.
+        replace: bool,
+    },
+    /// Range une cle SSH dans un coffre, importee ou generee.
+    SaveSshKey {
+        cli: PassCli,
+        vault: String,
+        title: String,
+        source: SshKeySource,
+        connection: String,
+    },
 }
 
 /// Reponse du thread Proton Pass. Les erreurs sont deja mises en forme: le
 /// thread d'interface n'a plus qu'a les afficher.
+///
+/// Aucune variante ne rapporte de secret: seulement de quoi rattacher la
+/// connexion a l'item et de quoi afficher un message.
 pub enum PassResponse {
     Probe(Result<String, String>),
     Vaults(Result<Vec<Vault>, String>),
     Items(String, Result<Vec<Item>, String>),
     LoadAgent(String, Result<String, String>),
+    SavedLogin {
+        connection: String,
+        vault: String,
+        item: String,
+        result: Result<String, String>,
+    },
+    SavedSshKey {
+        connection: String,
+        vault: String,
+        item: String,
+        result: Result<String, String>,
+    },
 }
 
 /// Executeur des appels `pass-cli`, qui sont bloquants (deverrouillage de
@@ -62,6 +102,53 @@ impl PassWorker {
                             let result = AgentManager::load_into_existing(&cli, &vault)
                                 .map_err(|e| e.to_string());
                             PassResponse::LoadAgent(vault, result)
+                        }
+                        PassRequest::SaveLogin {
+                            cli,
+                            vault,
+                            draft,
+                            connection,
+                            replace,
+                        } => {
+                            let item = draft.title.clone();
+                            let result = if replace {
+                                cli.set_login_password(&vault, &item, &draft.password)
+                            } else {
+                                cli.create_login(&vault, &draft)
+                            }
+                            .map_err(|e| e.to_string());
+                            // `draft` meurt ici: le mot de passe est efface
+                            // avant meme que la reponse ne parte.
+                            drop(draft);
+                            PassResponse::SavedLogin {
+                                connection,
+                                vault,
+                                item,
+                                result,
+                            }
+                        }
+                        PassRequest::SaveSshKey {
+                            cli,
+                            vault,
+                            title,
+                            source,
+                            connection,
+                        } => {
+                            let result = match &source {
+                                SshKeySource::Import(path) => {
+                                    cli.import_ssh_key(&vault, &title, path)
+                                }
+                                SshKeySource::Generate { key_type, comment } => {
+                                    cli.generate_ssh_key(&vault, &title, *key_type, comment)
+                                }
+                            }
+                            .map_err(|e| e.to_string());
+                            PassResponse::SavedSshKey {
+                                connection,
+                                vault,
+                                item: title,
+                                result,
+                            }
                         }
                     };
                     if res_tx.send(response).is_err() {

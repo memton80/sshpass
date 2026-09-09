@@ -108,7 +108,17 @@ fn agents_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
         };
         let tooltip = match &state {
             AgentState::Failed(err) => err.clone(),
-            other => format!("Agent {}", other.label()),
+            // La socket est affichee pour un agent actif: c'est ce qui permet
+            // de lire la cle publique d'une cle rangee dans le coffre, avec
+            // `SSH_AUTH_SOCK=<socket> ssh-add -L`.
+            other => match app.agents.socket_for(&vault) {
+                Some(socket) => format!(
+                    "Agent {}\nSSH_AUTH_SOCK={}",
+                    other.label(),
+                    socket.display()
+                ),
+                None => format!("Agent {}", other.label()),
+            },
         };
         ui.horizontal(|ui| {
             pixel::status_dot(ui, color, scale, &tooltip);

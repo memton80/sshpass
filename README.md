@@ -20,6 +20,10 @@ et une emulation de terminal en Rust pur.
   couleurs 24 bits, gras et souligne.
 * **Proton Pass dans l'interface** : parcourir les coffres et leurs items,
   associer un item a une connexion, voir et piloter l'etat des agents SSH.
+* **Ecriture dans le coffre** : le mot de passe saisi dans la fiche part
+  directement dans Proton Pass (titre, utilisateur et URL `ssh://` compris), et
+  une cle SSH s'y importe ou s'y genere sans quitter l'application — voir
+  [ADR 0007](docs/adr/0007-ecriture-dans-proton-pass.md).
 * **CRUD des connexions** : creation, modification, suppression, deplacement
   entre dossiers, favoris et tags.
 * **Autocompletion** sur l'hote, l'utilisateur, le coffre et l'item, alimentee
@@ -177,6 +181,42 @@ ne passe donc ni par la memoire de sshpass-gui, ni par le PTY, ni par les journa
 
 Necessite OpenSSH 8.4 ou plus recent (pour `SSH_ASKPASS_REQUIRE=force`).
 
+### Enregistrer un secret dans le coffre
+
+La fiche de connexion ecrit aussi **vers** Proton Pass : plus besoin de creer
+l'item a la main avant de pouvoir s'en servir.
+
+**Mot de passe.** Choisissez « Mot de passe (Proton Pass) », un coffre, puis
+saisissez le mot de passe du serveur et cliquez sur **Enregistrer dans Proton
+Pass**. L'item est cree avec le titre de la connexion, l'utilisateur SSH et
+l'URL `ssh://user@hote:port`, et la fiche s'y rattache toute seule. Si un item
+du meme titre existe deja, le bouton devient **Mettre a jour** et remplace le
+mot de passe au lieu d'en creer un second.
+
+**Cle SSH.** Avec « Agent SSH » ou « Fichier de cle », le meme bloc propose de
+**generer** une paire (Ed25519, RSA 2048 ou RSA 4096) directement dans le
+coffre, ou d'**importer** le fichier de cle indique. La connexion bascule alors
+en `auth = "agent"` : la cle est servie par l'agent du coffre, plus par un
+fichier local. Reste a deposer la cle publique sur le serveur — elle se lit
+depuis l'application Proton Pass, ou avec `ssh-add -L` sur la socket de l'agent
+que le panneau lateral affiche.
+
+Ou passe le secret, exactement :
+
+| Operation | Commande `pass-cli` | Transmission |
+| --- | --- | --- |
+| Creation d'un identifiant | `item create login --from-template -` | entree standard |
+| Mise a jour d'un mot de passe | `item update --field password=…` | ligne de commande |
+| Import d'une cle | `item create ssh-key import --from-private-key` | un chemin |
+| Generation d'une cle | `item create ssh-key generate` | rien ne sort du coffre |
+
+La creation passe par l'entree standard, donc le mot de passe n'apparait pas
+dans `/proc/<pid>/cmdline`. La **mise a jour** est la seule exception :
+`pass-cli item update` n'accepte les valeurs que sur sa ligne de commande.
+L'interface l'indique sous le bouton. Rien n'est jamais ecrit sur le disque, et
+le champ de saisie est efface des le clic — voir
+[ADR 0007](docs/adr/0007-ecriture-dans-proton-pass.md).
+
 ### Raccourcis
 
 | Raccourci | Effet |
@@ -246,7 +286,8 @@ src/
 ├── app.rs         etat global, boucle eframe, file d'actions
 ├── theme.rs       palette sombre et polices systeme
 ├── config/        modele de donnees et persistance TOML
-├── pass/          pass-cli (cli.rs), agents SSH (agent.rs), pont askpass
+├── pass/          pass-cli (cli.rs), agents SSH (agent.rs), secrets (secret.rs),
+│                  pont askpass
 ├── term/          session PTY, encodage clavier, couleurs, rendu egui
 └── ui/            panneaux, fenetres, animations, autocompletion, pixel art
 ```
@@ -274,7 +315,15 @@ detecte. Le binaire nu et l'AppImage passent chacun ce test.
 * Le schema JSON exact de `pass-cli` n'etant pas publie, les analyseurs sont
   tolerants et testes sur plusieurs conventions de nommage
   ([ADR 0002](docs/adr/0002-integration-pass-cli.md)) ; a confronter a une
-  sortie reelle.
+  sortie reelle. Les commandes d'ecriture, elles, sont documentees et leurs
+  arguments verifies par des tests qui pilotent un faux `pass-cli`.
+* Mettre a jour un mot de passe expose brievement sa valeur dans
+  `/proc/<pid>/cmdline` : `pass-cli item update` n'offre aucune alternative a
+  `--field`. La creation, elle, passe par l'entree standard
+  ([ADR 0007](docs/adr/0007-ecriture-dans-proton-pass.md)).
+* La cle publique d'une cle generee n'est pas affichee dans l'application : la
+  lire supposerait de recuperer aussi la partie privee. Elle se recupere depuis
+  Proton Pass ou via `ssh-add -L`.
 * **Systemes Unix uniquement.** Le PTY, les sockets d'agent et le pont
   `SSH_ASKPASS` reposent sur des mecanismes POSIX; compiler pour Windows
   s'arrete sur un `compile_error!` explicite. Cible eprouvee : Linux

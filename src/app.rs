@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::{self, AgentMode, AuthMethod, Config, Connection, Folder, ProtonRef};
 use crate::pass::{
-    AgentManager, AgentState, Item, PassCli, PassRequest, PassResponse, PassWorker, Vault,
+    AgentManager, AgentState, Item, LoginDraft, PassCli, PassRequest, PassResponse, PassWorker,
+    Secret, SshKeySource, Vault,
 };
 use crate::term::command::{self, CommandSpec, SessionContext};
 use crate::term::{TermSize, TerminalSession};
@@ -108,6 +109,28 @@ pub enum Action {
         item: String,
     },
     ConnectWithoutAgent(String),
+    /// Ecrit dans un coffre le mot de passe saisi dans la fiche de connexion.
+    ///
+    /// Le secret est porte par un `Secret`: la variante n'est ni clonable ni
+    /// affichable, et la valeur est effacee des que la requete est consommee.
+    SaveProtonLogin {
+        connection: String,
+        vault: String,
+        item: String,
+        user: String,
+        host: String,
+        port: u16,
+        password: Secret,
+        /// L'item existe deja: mettre a jour au lieu d'en creer un doublon.
+        replace: bool,
+    },
+    /// Range une cle SSH dans un coffre: import d'un fichier, ou generation.
+    SaveProtonSshKey {
+        connection: String,
+        vault: String,
+        item: String,
+        source: SshKeySource,
+    },
     Toast(String, ToastKind),
 }
 
@@ -120,6 +143,10 @@ pub struct SshpassApp {
     pub vaults: Vec<Vault>,
     pub items: HashMap<String, Vec<Item>>,
     pub loading_items: HashSet<String>,
+    /// Connexion dont un secret est en cours d'ecriture dans un coffre.
+    /// Sert a neutraliser les boutons: deux envois de suite creeraient deux
+    /// items.
+    pub writing_secret: Option<String>,
 
     pub tabs: Vec<Tab>,
     pub active_tab: Option<usize>,
@@ -162,6 +189,7 @@ impl SshpassApp {
             vaults: Vec::new(),
             items: HashMap::new(),
             loading_items: HashSet::new(),
+            writing_secret: None,
             tabs: Vec::new(),
             active_tab: None,
             search: String::new(),
@@ -437,11 +465,18 @@ impl SshpassApp {
                         Ok(items) => {
                             self.items.insert(vault, items);
                         }
-                        Err(err) => self.toast(
-                            format!("Items de « {vault} » illisibles: {err}"),
-                            ToastKind::Error,
-                            now,
-                        ),
+                        Err(err) => {
+                            // Le coffre est marque comme lu, meme vide: la
+                            // fiche de connexion redemande la lecture tant
+                            // qu'elle n'a rien, et un echec relancerait sinon
+                            // `pass-cli` a chaque frame.
+                            self.items.entry(vault.clone()).or_default();
+                            self.toast(
+                                format!("Items de « {vault} » illisibles: {err}"),
+                                ToastKind::Error,
+                                now,
+                            );
+                        }
                     }
                 }
                 PassResponse::LoadAgent(vault, Ok(summary)) => {
@@ -455,7 +490,107 @@ impl SshpassApp {
                 PassResponse::LoadAgent(vault, Err(err)) => {
                     self.toast(format!("{vault}: {err}"), ToastKind::Error, now);
                 }
+                PassResponse::SavedLogin {
+                    connection,
+                    vault,
+                    item,
+                    result,
+                } => {
+                    self.writing_secret = None;
+                    match result {
+                        Ok(summary) => {
+                            // Le champ reste vide: `pass-cli item view` lit
+                            // `password` par defaut, l'imposer n'apporterait rien.
+                            self.attach_item(&connection, &vault, &item, None);
+                            self.toast(summary, ToastKind::Success, now);
+                            self.refresh_vault_items(vault);
+                        }
+                        Err(err) => self.toast(
+                            format!("Enregistrement dans « {vault} » impossible: {err}"),
+                            ToastKind::Error,
+                            now,
+                        ),
+                    }
+                }
+                PassResponse::SavedSshKey {
+                    connection,
+                    vault,
+                    item,
+                    result,
+                } => {
+                    self.writing_secret = None;
+                    match result {
+                        Ok(summary) => {
+                            // La cle vit desormais dans le coffre: c'est l'agent
+                            // Proton Pass qui la sert, plus un fichier local.
+                            self.attach_item(&connection, &vault, &item, Some(AuthMethod::Agent));
+                            self.toast(summary, ToastKind::Success, now);
+                            self.toast(
+                                format!(
+                                    "Ajoutez la cle publique de « {item} » sur le serveur \
+                                     (Proton Pass, onglet Cle SSH) avant de vous connecter."
+                                ),
+                                ToastKind::Info,
+                                now,
+                            );
+                            self.refresh_vault_items(vault);
+                        }
+                        Err(err) => self.toast(
+                            format!("Cle SSH non enregistree dans « {vault} »: {err}"),
+                            ToastKind::Error,
+                            now,
+                        ),
+                    }
+                }
             }
+        }
+    }
+
+    /// Relit un coffre dont le contenu vient de changer.
+    ///
+    /// Sans cela l'item tout juste cree n'apparaitrait ni dans les suggestions
+    /// de la fiche ni dans le panneau lateral, et un second enregistrement
+    /// creerait un doublon au lieu d'une mise a jour.
+    fn refresh_vault_items(&mut self, vault: String) {
+        self.items.remove(&vault);
+        self.actions.push(Action::LoadItems(vault));
+    }
+
+    /// Rattache une connexion a un item qui vient d'etre ecrit dans un coffre.
+    ///
+    /// La fiche ouverte est servie en premier: c'est elle que l'utilisateur a
+    /// sous les yeux et c'est elle qui sera enregistree. La connexion deja
+    /// persistee est mise a jour elle aussi, pour qu'un abandon de la fiche ne
+    /// perde pas le lien vers un item pourtant bien cree.
+    fn attach_item(&mut self, connection: &str, vault: &str, item: &str, auth: Option<AuthMethod>) {
+        if let Some(editor) = self
+            .editor
+            .as_mut()
+            .filter(|editor| editor.connection.id == connection)
+        {
+            editor.vault_text = vault.to_string();
+            editor.item_text = item.to_string();
+            if let Some(auth) = auth {
+                editor.connection.auth = auth;
+            }
+            editor.error = None;
+        }
+
+        let mut changed = false;
+        if let Some(slot) = self.config.connection_mut(connection) {
+            let field = slot.proton.as_ref().and_then(|p| p.field.clone());
+            slot.proton = Some(ProtonRef {
+                vault: vault.to_string(),
+                item: item.to_string(),
+                field,
+            });
+            if let Some(auth) = auth {
+                slot.auth = auth;
+            }
+            changed = true;
+        }
+        if changed {
+            self.save_config();
         }
     }
 
@@ -612,6 +747,43 @@ impl SshpassApp {
                             self.tabs[index].state = tab.state;
                         }
                     }
+                }
+                Action::SaveProtonLogin {
+                    connection,
+                    vault,
+                    item,
+                    user,
+                    host,
+                    port,
+                    password,
+                    replace,
+                } => {
+                    let draft = LoginDraft::for_ssh(&item, &user, &host, port, password);
+                    let cli = self.cli();
+                    self.writing_secret = Some(connection.clone());
+                    self.pass.send(PassRequest::SaveLogin {
+                        cli,
+                        vault,
+                        draft,
+                        connection,
+                        replace,
+                    });
+                }
+                Action::SaveProtonSshKey {
+                    connection,
+                    vault,
+                    item,
+                    source,
+                } => {
+                    let cli = self.cli();
+                    self.writing_secret = Some(connection.clone());
+                    self.pass.send(PassRequest::SaveSshKey {
+                        cli,
+                        vault,
+                        title: item,
+                        source,
+                        connection,
+                    });
                 }
                 Action::Toast(message, kind) => self.toast(message, kind, now),
             }
