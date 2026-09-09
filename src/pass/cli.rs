@@ -22,6 +22,14 @@
 //!   les valeurs que par `--field cle=valeur`, donc sur la ligne de commande.
 //!   C'est la seule exception, elle est signalee dans l'interface et les
 //!   messages d'erreur sont expurges (`secret::redact`).
+//!
+//! ## Session
+//!
+//! Toutes les commandes ci-dessus supposent une session Proton Pass ouverte.
+//! Elle ne l'est pas eternellement: elle expire, et l'arret de la machine y met
+//! fin. `session()` la sonde avec `pass-cli info`, et distingue trois cas —
+//! ouverte, fermee (une reconnexion suffit, cf. `pass::login`), ou verrouillee
+//! par un code (`pass-cli session unlock`, qui exige une saisie humaine).
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -54,6 +62,39 @@ pub enum PassError {
     Invalid(String),
     #[error("erreur d'entree/sortie: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl PassError {
+    /// Texte le plus parlant de l'erreur: la sortie d'erreur de `pass-cli`
+    /// quand il en a produit une, sinon le message complet.
+    pub fn detail(&self) -> String {
+        match self {
+            PassError::Command { stderr, .. } if !stderr.is_empty() => stderr.clone(),
+            other => other.to_string(),
+        }
+    }
+
+    /// Vrai si l'echec vient d'une session fermee ou expiree.
+    ///
+    /// Seule la sortie d'erreur est examinee, jamais la commande: `item create
+    /// login` contient « login » sans rien dire de la session.
+    pub fn is_session_closed(&self) -> bool {
+        match self {
+            PassError::Command { stderr, .. } => {
+                !mentions(stderr, &LOCKED_SESSION_PHRASES)
+                    && mentions(stderr, &CLOSED_SESSION_PHRASES)
+            }
+            _ => false,
+        }
+    }
+
+    /// Vrai si l'echec vient d'une session verrouillee par un code.
+    pub fn is_session_locked(&self) -> bool {
+        match self {
+            PassError::Command { stderr, .. } => mentions(stderr, &LOCKED_SESSION_PHRASES),
+            _ => false,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, PassError>;
@@ -263,6 +304,79 @@ fn summarize(output: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+/// Etat de la session Proton Pass, tel que `pass-cli info` le laisse voir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Session {
+    /// Session utilisable. `account` est l'adresse ou le nom rapporte, s'il y
+    /// en a un — la sortie de `info` n'est pas un format fige.
+    Open { account: String },
+    /// Session absente ou expiree: `pass-cli login` la retablit.
+    Closed(String),
+    /// Session authentifiee mais verrouillee par un code. Rien d'automatique
+    /// n'est possible: `session unlock` reclame une saisie.
+    Locked(String),
+}
+
+/// Resultat d'une detection complete: le binaire et l'etat de sa session.
+#[derive(Debug, Clone)]
+pub struct Probe {
+    pub version: String,
+    pub session: Session,
+}
+
+/// Echec deja mis en forme pour l'interface, avec ce qu'elle doit en deduire.
+///
+/// Le booleen evite que chaque appelant ait a refaire l'analyse du texte
+/// d'erreur pour savoir si la session est en cause.
+#[derive(Debug, Clone)]
+pub struct PassFailure {
+    pub message: String,
+    /// La session est fermee: une reconnexion reglerait le probleme.
+    pub session_closed: bool,
+}
+
+impl From<PassError> for PassFailure {
+    fn from(err: PassError) -> Self {
+        Self {
+            session_closed: err.is_session_closed(),
+            message: err.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for PassFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// Tournures par lesquelles `pass-cli` signale une session absente ou expiree.
+///
+/// Aucun code de sortie ne distingue les motifs d'echec: seul le texte le
+/// fait. La liste est volontairement large, dans le meme esprit que les
+/// analyseurs JSON — mieux vaut proposer une reconnexion de trop qu'aucune.
+const CLOSED_SESSION_PHRASES: [&str; 10] = [
+    "not logged in",
+    "no session",
+    "no active session",
+    "session expired",
+    "session not found",
+    "invalid session",
+    "not authenticated",
+    "authentication required",
+    "please log in",
+    "unauthorized",
+];
+
+/// Tournures d'une session verrouillee. Testees en premier: un message de
+/// verrouillage peut lui aussi parler d'autorisation.
+const LOCKED_SESSION_PHRASES: [&str; 3] = ["session is locked", "session locked", "unlock"];
+
+fn mentions(haystack: &str, phrases: &[&str]) -> bool {
+    let haystack = haystack.to_lowercase();
+    phrases.iter().any(|phrase| haystack.contains(phrase))
+}
+
 /// Client `pass-cli`.
 #[derive(Debug, Clone)]
 pub struct PassCli {
@@ -286,6 +400,38 @@ impl PassCli {
     pub fn version(&self) -> Result<String> {
         let out = self.run(&["--version".into()])?;
         Ok(out.trim().to_string())
+    }
+
+    /// Detection complete: le binaire repond, et sa session est-elle ouverte.
+    pub fn probe(&self) -> Result<Probe> {
+        Ok(Probe {
+            version: self.version()?,
+            session: self.session()?,
+        })
+    }
+
+    /// Etat de la session, lu avec `pass-cli info`.
+    ///
+    /// Un `info` qui echoue est la situation **normale** quand la session est
+    /// fermee: ce n'est donc pas une erreur, mais un `Session::Closed` portant
+    /// les mots de `pass-cli`. Seuls les echecs qui ne disent rien de la
+    /// session — binaire introuvable, delai depasse, entree/sortie —
+    /// remontent en `Err`, car une reconnexion n'y changerait rien.
+    pub fn session(&self) -> Result<Session> {
+        match self.run(&["info".into()]) {
+            Ok(out) => Ok(Session::Open {
+                account: parse_account(&out),
+            }),
+            Err(err @ PassError::Command { .. }) => {
+                let detail = err.detail();
+                if err.is_session_locked() {
+                    Ok(Session::Locked(detail))
+                } else {
+                    Ok(Session::Closed(detail))
+                }
+            }
+            Err(other) => Err(other),
+        }
     }
 
     /// `pass-cli vault list --output json`
@@ -561,6 +707,35 @@ impl PassCli {
     }
 }
 
+/// Compte rapporte par `pass-cli info`.
+///
+/// La sortie est faite pour etre lue par un humain (`- Email: x@proton.me`) et
+/// n'a pas de variante JSON documentee. L'analyse suit donc le meme principe
+/// que celle des items: on cherche des cles connues, normalisees, et l'absence
+/// de reponse n'est pas une erreur — c'est juste une pastille sans nom.
+fn parse_account(output: &str) -> String {
+    let mut fallback = String::new();
+    for line in output.lines() {
+        let line = line.trim().trim_start_matches(['-', '*']).trim();
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match normalize_key(key).as_str() {
+            "email" => return value.to_string(),
+            // Une session par jeton n'a pas d'adresse: son nom fait l'affaire.
+            "username" | "personalaccesstoken" if fallback.is_empty() => {
+                fallback = value.to_string()
+            }
+            _ => {}
+        }
+    }
+    fallback
+}
+
 /// Normalise un nom de champ: minuscules, sans separateurs.
 /// `share_id`, `shareId` et `Share-ID` donnent tous `shareid`.
 fn normalize_key(key: &str) -> String {
@@ -769,6 +944,129 @@ mod tests {
             }
             other => panic!("attendu Command, obtenu {other:?}"),
         }
+    }
+
+    #[test]
+    fn account_is_read_from_the_human_output() {
+        let output = "- Release track: stable\n- ID: abc\n- Username: alex\n\
+                      - Email: alex@proton.me\n- Session has lock: no\n";
+        assert_eq!(parse_account(output), "alex@proton.me");
+    }
+
+    #[test]
+    fn account_falls_back_to_the_username() {
+        assert_eq!(parse_account("- Username: alex\n"), "alex");
+        // Une session par jeton n'a pas d'adresse.
+        assert_eq!(
+            parse_account("- Personal Access Token: ci-runner\n"),
+            "ci-runner"
+        );
+        // Rien d'exploitable n'est pas une erreur: la pastille reste muette.
+        assert_eq!(parse_account("bonjour\n- Session has lock: yes\n"), "");
+    }
+
+    #[test]
+    fn closed_and_locked_sessions_are_told_apart() {
+        let closed = |stderr: &str| PassError::Command {
+            command: "pass-cli info".into(),
+            code: "1".into(),
+            stderr: stderr.into(),
+        };
+
+        assert!(closed("Error: not logged in").is_session_closed());
+        assert!(closed("session expired, please log in again").is_session_closed());
+        assert!(closed("UNAUTHORIZED").is_session_closed());
+
+        // Une session verrouillee n'est pas une session fermee: relancer
+        // `login` ne servirait a rien, il faut le code de deverrouillage.
+        let locked = closed("Session is locked. Run `pass-cli session unlock`");
+        assert!(locked.is_session_locked());
+        assert!(!locked.is_session_closed());
+
+        // Une panne ordinaire ne doit pas declencher de reconnexion.
+        assert!(!closed("vault not found").is_session_closed());
+        assert!(!PassError::NotFound("pass-cli".into()).is_session_closed());
+        assert!(!PassError::Timeout("pass-cli info".into()).is_session_closed());
+    }
+
+    #[test]
+    fn the_command_line_never_decides_the_session_verdict() {
+        // « login » figure dans la commande, pas dans la sortie d'erreur:
+        // creer un identifiant qui echoue n'est pas une session fermee.
+        let err = PassError::Command {
+            command: "pass-cli item create login --vault-name V".into(),
+            code: "1".into(),
+            stderr: "vault not found".into(),
+        };
+        assert!(!err.is_session_closed());
+        assert!(!err.is_session_locked());
+    }
+
+    #[test]
+    fn failures_carry_the_session_verdict_to_the_interface() {
+        let failure = PassFailure::from(PassError::Command {
+            command: "pass-cli vault list".into(),
+            code: "1".into(),
+            stderr: "not logged in".into(),
+        });
+        assert!(failure.session_closed);
+        assert!(failure.to_string().contains("not logged in"));
+
+        let other = PassFailure::from(PassError::NotFound("pass-cli".into()));
+        assert!(!other.session_closed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_info_reports_a_closed_session_not_an_error() {
+        // `sh -c` sans `info` valide: le faux binaire echoue en disant qu'il
+        // n'y a pas de session, exactement comme `pass-cli` deconnecte.
+        let cli = PassCli::new("sh");
+        let out = cli
+            .run(&[
+                "-c".into(),
+                "echo 'Error: not logged in' >&2; exit 1".into(),
+            ])
+            .expect_err("doit echouer");
+        assert!(out.is_session_closed());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_probe_maps_the_three_outcomes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("sshpass-gui-session-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let make = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("ecriture");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+            PassCli::new(path.to_string_lossy().into_owned())
+        };
+
+        let open = make("open", "echo '- Email: alex@proton.me'");
+        assert_eq!(
+            open.session().expect("sonde"),
+            Session::Open {
+                account: "alex@proton.me".into()
+            }
+        );
+
+        let closed = make("closed", "echo 'Error: not logged in' >&2; exit 1");
+        assert!(matches!(closed.session(), Ok(Session::Closed(_))));
+
+        let locked = make("locked", "echo 'Session is locked' >&2; exit 1");
+        assert!(matches!(locked.session(), Ok(Session::Locked(_))));
+
+        // Un binaire absent reste une erreur: aucune reconnexion n'y changerait
+        // quoi que ce soit.
+        assert!(matches!(
+            PassCli::new("pass-cli-qui-n-existe-pas").session(),
+            Err(PassError::NotFound(_))
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -40,25 +40,7 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                 });
             });
 
-            match &app.pass_status {
-                PassStatus::Available(version) => {
-                    ui::hint(ui, version, &palette);
-                }
-                PassStatus::Probing => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui::hint(ui, "Detection de pass-cli...", &palette);
-                    });
-                }
-                PassStatus::Missing(err) => {
-                    ui.label(RichText::new(err).color(palette.danger).size(11.0));
-                    ui::hint(
-                        ui,
-                        "Installez Proton Pass CLI, puis « Actualiser ».",
-                        &palette,
-                    );
-                }
-            }
+            session_section(app, ui);
 
             ui::separator(ui, &palette);
             agents_section(app, ui);
@@ -67,6 +49,110 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
         });
 
     app.show_vault_panel = expanded;
+}
+
+/// Etat de `pass-cli` et de sa session, avec le rattrapage manuel.
+///
+/// Une session fermee est le cas courant apres un redemarrage de la machine:
+/// elle a droit a son propre bloc, avec le lien de connexion en clair quand le
+/// navigateur ne s'est pas ouvert tout seul.
+fn session_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
+    let palette = app.palette;
+
+    if app.login.is_running() {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui::hint(ui, "Reconnexion a Proton Pass...", &palette);
+        });
+        match app.login.state().url() {
+            Some(url) => {
+                let url = url.to_string();
+                ui::hint(ui, "Terminez la connexion dans le navigateur.", &palette);
+                ui.horizontal(|ui| {
+                    if ui
+                        .small_button("Copier le lien")
+                        .on_hover_text(&url)
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(url.clone());
+                        app.actions.push(Action::Toast(
+                            "Lien de connexion copie".into(),
+                            crate::app::ToastKind::Info,
+                        ));
+                    }
+                    if ui.small_button("Annuler").clicked() {
+                        app.login.cancel();
+                    }
+                });
+            }
+            None => {
+                ui::hint(ui, "Ouverture du lien de connexion...", &palette);
+            }
+        }
+        return;
+    }
+
+    match &app.pass_status {
+        PassStatus::Ready { version, account } => {
+            if !account.is_empty() {
+                ui.label(RichText::new(account).color(palette.success).size(11.0));
+            }
+            ui::hint(ui, version, &palette);
+        }
+        PassStatus::Probing => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui::hint(ui, "Verification de la session...", &palette);
+            });
+        }
+        PassStatus::LoggedOut { detail } => {
+            ui.label(
+                RichText::new("Session Proton Pass fermee")
+                    .color(palette.warning)
+                    .size(12.0)
+                    .strong(),
+            );
+            ui.label(RichText::new(detail).color(palette.text_dim).size(10.0));
+            if ui
+                .button("Se reconnecter")
+                .on_hover_text("Lance `pass-cli login` et ouvre le lien d'authentification")
+                .clicked()
+            {
+                app.actions.push(Action::ReconnectPass);
+            }
+            if !app.config.proton_pass.auto_login {
+                ui::hint(
+                    ui,
+                    "Reconnexion automatique desactivee dans les reglages.",
+                    &palette,
+                );
+            }
+        }
+        PassStatus::Locked { detail } => {
+            ui.label(
+                RichText::new("Session verrouillee")
+                    .color(palette.danger)
+                    .size(12.0)
+                    .strong(),
+            );
+            ui.label(RichText::new(detail).color(palette.text_dim).size(10.0));
+            // Le code de verrouillage n'est connu que de l'utilisateur, et
+            // `session unlock` le demande sur un terminal: rien a automatiser.
+            ui::hint(
+                ui,
+                "Deverrouillez-la avec `pass-cli session unlock`, puis « Actualiser ».",
+                &palette,
+            );
+        }
+        PassStatus::Missing(err) => {
+            ui.label(RichText::new(err).color(palette.danger).size(11.0));
+            ui::hint(
+                ui,
+                "Installez Proton Pass CLI, puis « Actualiser ».",
+                &palette,
+            );
+        }
+    }
 }
 
 fn agents_section(app: &mut SshpassApp, ui: &mut egui::Ui) {

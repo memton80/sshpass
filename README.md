@@ -24,6 +24,10 @@ et une emulation de terminal en Rust pur.
   directement dans Proton Pass (titre, utilisateur et URL `ssh://` compris), et
   une cle SSH s'y importe ou s'y genere sans quitter l'application — voir
   [ADR 0007](docs/adr/0007-ecriture-dans-proton-pass.md).
+* **Session surveillee** : une session Proton Pass ne survit pas a l'arret de
+  la machine. sshpass-gui la verifie au demarrage, toutes les cinq minutes et
+  a chaque appel qui echoue, puis relance `pass-cli login` et ouvre le lien
+  d'authentification — voir [ADR 0008](docs/adr/0008-session-proton-pass.md).
 * **CRUD des connexions** : creation, modification, suppression, deplacement
   entre dossiers, favoris et tags.
 * **Autocompletion** sur l'hote, l'utilisateur, le coffre et l'item, alimentee
@@ -172,6 +176,42 @@ Trois modes d'agent, au choix dans les reglages :
 
 Detail de la strategie : [ADR 0003](docs/adr/0003-ssh-auth-sock.md).
 
+### Session et reconnexion
+
+Toutes les commandes `pass-cli` supposent une session ouverte, et cette session
+**ne survit pas a l'arret de la machine**. sshpass-gui la verifie avec
+`pass-cli info` :
+
+* au demarrage ;
+* toutes les cinq minutes, meme fenetre inactive ;
+* des qu'un appel echoue en signalant un probleme d'autorisation ;
+* avant d'ouvrir une connexion adossee au coffre — inutile d'ouvrir un onglet
+  qui echouera.
+
+Quand la session est fermee, `pass-cli login` est relance et **le lien
+d'authentification s'ouvre dans le navigateur**. Une fois le flux termine, la
+session est resondee et l'application repart. Aucun identifiant ne passe par
+sshpass-gui : tout se joue entre le navigateur et Proton.
+
+La pastille de la barre d'outils distingue les quatre etats :
+
+| Pastille | Etat | Quoi faire |
+| --- | --- | --- |
+| Verte | session ouverte | rien |
+| Orange « Session fermee » | expiree ou machine redemarree | rien, la reconnexion part seule |
+| Orange « Reconnexion... » | flux en cours | terminer dans le navigateur |
+| Rouge « Session verrouillee » | verrouillee par un code | `pass-cli session unlock` |
+
+Une tentative qui echoue **n'est jamais reessayee toute seule** : le panneau
+lateral affiche alors un bouton « Se reconnecter ». L'ouverture automatique du
+navigateur se desactive dans les reglages (`auto_login`) ; la detection, elle,
+continue. Si aucun ouvreur de liens n'est installe (`xdg-open`, `open`), le
+panneau affiche l'URL avec un bouton « Copier le lien ».
+
+Le verrouillage de session (`pass-cli session create-lock`) n'est pas
+automatisable : le code n'est connu que de l'utilisateur, et `session unlock`
+le demande sur un terminal.
+
 ### Mots de passe
 
 Pour une connexion en `auth = "password"`, sshpass-gui **ne lit jamais le secret**.
@@ -245,6 +285,7 @@ version = 1
 [proton_pass]
 binary = "pass-cli"
 agent_mode = "own-agent"
+auto_login = true
 
 [[connections]]
 id = "8a12…"
@@ -287,7 +328,7 @@ src/
 ├── theme.rs       palette sombre et polices systeme
 ├── config/        modele de donnees et persistance TOML
 ├── pass/          pass-cli (cli.rs), agents SSH (agent.rs), secrets (secret.rs),
-│                  pont askpass
+│                  reconnexion (login.rs), pont askpass
 ├── term/          session PTY, encodage clavier, couleurs, rendu egui
 └── ui/            panneaux, fenetres, animations, autocompletion, pixel art
 ```
@@ -324,6 +365,10 @@ detecte. Le binaire nu et l'AppImage passent chacun ce test.
 * La cle publique d'une cle generee n'est pas affichee dans l'application : la
   lire supposerait de recuperer aussi la partie privee. Elle se recupere depuis
   Proton Pass ou via `ssh-add -L`.
+* La detection d'une session fermee repose sur les tournures anglaises de
+  `pass-cli`, faute de code de sortie dedie. Un `info` en echec est de toute
+  facon traite comme une session fermee, ce qui garde le comportement correct
+  ([ADR 0008](docs/adr/0008-session-proton-pass.md)).
 * **Systemes Unix uniquement.** Le PTY, les sockets d'agent et le pont
   `SSH_ASKPASS` reposent sur des mecanismes POSIX; compiler pour Windows
   s'arrete sur un `compile_error!` explicite. Cible eprouvee : Linux

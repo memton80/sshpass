@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::{self, AgentMode, AuthMethod, Config, Connection, Folder, ProtonRef};
 use crate::pass::{
-    AgentManager, AgentState, Item, LoginDraft, PassCli, PassRequest, PassResponse, PassWorker,
-    Secret, SshKeySource, Vault,
+    AgentManager, AgentState, Item, LoginDraft, LoginManager, LoginOutcome, PassCli, PassFailure,
+    PassRequest, PassResponse, PassWorker, Secret, Session, SshKeySource, Vault,
 };
 use crate::term::command::{self, CommandSpec, SessionContext};
 use crate::term::{TermSize, TerminalSession};
@@ -16,6 +16,12 @@ use crate::ui;
 const AGENT_WAIT_TIMEOUT: f64 = 20.0;
 /// Duree d'affichage d'une notification.
 const TOAST_DURATION: f64 = 5.0;
+/// Intervalle entre deux verifications spontanees de la session Proton Pass.
+///
+/// Une session expire sans prevenir personne. Sans cette ronde, l'application
+/// ne s'en apercevrait qu'au premier appel qui echoue — c'est-a-dire au pire
+/// moment, celui ou l'on essaie d'ouvrir une connexion.
+const SESSION_CHECK_INTERVAL: f64 = 300.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
@@ -30,17 +36,52 @@ pub struct Toast {
     pub expires_at: f64,
 }
 
-/// Disponibilite de `pass-cli`.
+/// Disponibilite de `pass-cli`, binaire **et** session.
+///
+/// Les deux sont distingues parce que les remedes n'ont rien a voir: un
+/// binaire absent s'installe, une session fermee se rouvre toute seule
+/// (cf. `pass::login`), une session verrouillee reclame un code que seul
+/// l'utilisateur connait.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PassStatus {
     Probing,
-    Available(String),
+    /// Binaire present et session ouverte: tout est utilisable.
+    Ready {
+        version: String,
+        account: String,
+    },
+    /// Binaire present, session fermee ou expiree.
+    LoggedOut {
+        detail: String,
+    },
+    /// Session authentifiee mais verrouillee par un code.
+    Locked {
+        detail: String,
+    },
+    /// Binaire introuvable, ou injoignable.
     Missing(String),
 }
 
 impl PassStatus {
+    /// Vrai quand une commande Proton Pass a une chance d'aboutir.
     pub fn is_available(&self) -> bool {
-        matches!(self, PassStatus::Available(_))
+        matches!(self, PassStatus::Ready { .. })
+    }
+
+    /// Libelle court pour l'infobulle de la barre d'outils.
+    pub fn summary(&self) -> String {
+        match self {
+            PassStatus::Probing => "Detection en cours".into(),
+            PassStatus::Ready { version, account } if account.is_empty() => {
+                format!("Session ouverte — {version}")
+            }
+            PassStatus::Ready { version, account } => {
+                format!("Session ouverte: {account} — {version}")
+            }
+            PassStatus::LoggedOut { detail } => format!("Session fermee: {detail}"),
+            PassStatus::Locked { detail } => format!("Session verrouillee: {detail}"),
+            PassStatus::Missing(err) => err.clone(),
+        }
     }
 }
 
@@ -109,6 +150,9 @@ pub enum Action {
         item: String,
     },
     ConnectWithoutAgent(String),
+    /// Relance `pass-cli login` a la demande, meme si une tentative a deja
+    /// echoue: c'est le bouton de rattrapage du panneau lateral.
+    ReconnectPass,
     /// Ecrit dans un coffre le mot de passe saisi dans la fiche de connexion.
     ///
     /// Le secret est porte par un `Secret`: la variante n'est ni clonable ni
@@ -140,6 +184,16 @@ pub struct SshpassApp {
     pub agents: AgentManager,
     pub pass: PassWorker,
     pub pass_status: PassStatus,
+    /// Flux `pass-cli login` en cours, s'il y en a un.
+    pub login: LoginManager,
+    /// Horodatage de la derniere verification de session.
+    pub last_session_check: f64,
+    /// Une reconnexion automatique reste permise.
+    ///
+    /// Desarme des qu'on en lance une, et rearme quand la session est
+    /// confirmee ouverte: une tentative abandonnee ne doit pas rouvrir un
+    /// onglet de navigateur a chaque ronde.
+    pub auto_login_armed: bool,
     pub vaults: Vec<Vault>,
     pub items: HashMap<String, Vec<Item>>,
     pub loading_items: HashSet<String>,
@@ -186,6 +240,9 @@ impl SshpassApp {
             agents,
             pass,
             pass_status: PassStatus::Probing,
+            login: LoginManager::new(),
+            last_session_check: 0.0,
+            auto_login_armed: true,
             vaults: Vec::new(),
             items: HashMap::new(),
             loading_items: HashSet::new(),
@@ -245,6 +302,40 @@ impl SshpassApp {
             return;
         };
         let vault = self.vault_of(&connection);
+
+        // Une connexion adossee au coffre n'a aucune chance d'aboutir sans
+        // session: l'agent ne demarrerait pas, ou le script askpass ne
+        // trouverait rien. Autant le dire tout de suite et lancer la
+        // reconnexion, plutot que d'ouvrir un onglet condamne a echouer.
+        if vault.is_some() {
+            match &self.pass_status {
+                PassStatus::LoggedOut { .. } => {
+                    // L'utilisateur vient d'agir: la reconnexion est de
+                    // nouveau permise, meme apres une tentative abandonnee.
+                    self.auto_login_armed = true;
+                    self.reconnect_if_allowed(now);
+                    self.toast(
+                        format!(
+                            "Session Proton Pass fermee: reconnectez-vous, puis rouvrez « {} ».",
+                            connection.display_name()
+                        ),
+                        ToastKind::Error,
+                        now,
+                    );
+                    return;
+                }
+                PassStatus::Locked { .. } => {
+                    self.toast(
+                        "Session Proton Pass verrouillee: `pass-cli session unlock`, \
+                         puis reessayez.",
+                        ToastKind::Error,
+                        now,
+                    );
+                    return;
+                }
+                _ => {}
+            }
+        }
 
         // En mode agent dedie, la session doit attendre que la socket existe:
         // ssh lit SSH_AUTH_SOCK au demarrage et ne le relira pas.
@@ -437,13 +528,36 @@ impl SshpassApp {
     fn poll_pass(&mut self, now: f64) {
         while let Some(response) = self.pass.try_recv() {
             match response {
-                PassResponse::Probe(Ok(version)) => {
-                    self.pass_status = PassStatus::Available(version);
-                    let cli = self.cli();
-                    self.pass.send(PassRequest::Vaults(cli));
-                }
-                PassResponse::Probe(Err(err)) => {
-                    self.pass_status = PassStatus::Missing(err);
+                PassResponse::Probe(Ok(probe)) => match probe.session {
+                    Session::Open { account } => {
+                        self.pass_status = PassStatus::Ready {
+                            version: probe.version,
+                            account,
+                        };
+                        // Session confirmee: une future coupure aura de
+                        // nouveau droit a une reconnexion automatique.
+                        self.auto_login_armed = true;
+                        let cli = self.cli();
+                        self.pass.send(PassRequest::Vaults(cli));
+                    }
+                    Session::Closed(detail) => {
+                        self.pass_status = PassStatus::LoggedOut { detail };
+                        self.reconnect_if_allowed(now);
+                    }
+                    Session::Locked(detail) => {
+                        // Rien d'automatique n'est possible: le code de
+                        // verrouillage n'est connu que de l'utilisateur.
+                        self.pass_status = PassStatus::Locked { detail };
+                        self.toast(
+                            "Session Proton Pass verrouillee: `pass-cli session unlock` \
+                             dans un terminal.",
+                            ToastKind::Error,
+                            now,
+                        );
+                    }
+                },
+                PassResponse::Probe(Err(failure)) => {
+                    self.pass_status = PassStatus::Missing(failure.message);
                 }
                 PassResponse::Vaults(Ok(vaults)) => {
                     if self.selected_vault.is_none() {
@@ -456,8 +570,10 @@ impl SshpassApp {
                     }
                     self.vaults = vaults;
                 }
-                PassResponse::Vaults(Err(err)) => {
-                    self.toast(format!("Coffres illisibles: {err}"), ToastKind::Error, now);
+                PassResponse::Vaults(Err(failure)) => {
+                    let message = format!("Coffres illisibles: {failure}");
+                    self.note_failure(&failure, now);
+                    self.toast(message, ToastKind::Error, now);
                 }
                 PassResponse::Items(vault, result) => {
                     self.loading_items.remove(&vault);
@@ -465,17 +581,15 @@ impl SshpassApp {
                         Ok(items) => {
                             self.items.insert(vault, items);
                         }
-                        Err(err) => {
+                        Err(failure) => {
                             // Le coffre est marque comme lu, meme vide: la
                             // fiche de connexion redemande la lecture tant
                             // qu'elle n'a rien, et un echec relancerait sinon
                             // `pass-cli` a chaque frame.
                             self.items.entry(vault.clone()).or_default();
-                            self.toast(
-                                format!("Items de « {vault} » illisibles: {err}"),
-                                ToastKind::Error,
-                                now,
-                            );
+                            let message = format!("Items de « {vault} » illisibles: {failure}");
+                            self.note_failure(&failure, now);
+                            self.toast(message, ToastKind::Error, now);
                         }
                     }
                 }
@@ -487,8 +601,10 @@ impl SshpassApp {
                         .to_string();
                     self.toast(format!("{vault}: {summary}"), ToastKind::Success, now);
                 }
-                PassResponse::LoadAgent(vault, Err(err)) => {
-                    self.toast(format!("{vault}: {err}"), ToastKind::Error, now);
+                PassResponse::LoadAgent(vault, Err(failure)) => {
+                    let message = format!("{vault}: {failure}");
+                    self.note_failure(&failure, now);
+                    self.toast(message, ToastKind::Error, now);
                 }
                 PassResponse::SavedLogin {
                     connection,
@@ -505,11 +621,12 @@ impl SshpassApp {
                             self.toast(summary, ToastKind::Success, now);
                             self.refresh_vault_items(vault);
                         }
-                        Err(err) => self.toast(
-                            format!("Enregistrement dans « {vault} » impossible: {err}"),
-                            ToastKind::Error,
-                            now,
-                        ),
+                        Err(failure) => {
+                            let message =
+                                format!("Enregistrement dans « {vault} » impossible: {failure}");
+                            self.note_failure(&failure, now);
+                            self.toast(message, ToastKind::Error, now);
+                        }
                     }
                 }
                 PassResponse::SavedSshKey {
@@ -535,15 +652,109 @@ impl SshpassApp {
                             );
                             self.refresh_vault_items(vault);
                         }
-                        Err(err) => self.toast(
-                            format!("Cle SSH non enregistree dans « {vault} »: {err}"),
-                            ToastKind::Error,
-                            now,
-                        ),
+                        Err(failure) => {
+                            let message =
+                                format!("Cle SSH non enregistree dans « {vault} »: {failure}");
+                            self.note_failure(&failure, now);
+                            self.toast(message, ToastKind::Error, now);
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// Tire les consequences d'un appel `pass-cli` qui a echoue.
+    ///
+    /// Une session fermee ne se voit pas toujours a la ronde suivante: c'est
+    /// souvent un appel ordinaire qui la revele en premier. On corrige alors
+    /// l'etat affiche et on enclenche la reconnexion sans attendre.
+    fn note_failure(&mut self, failure: &PassFailure, now: f64) {
+        if !failure.session_closed {
+            return;
+        }
+        self.pass_status = PassStatus::LoggedOut {
+            detail: failure.message.clone(),
+        };
+        self.reconnect_if_allowed(now);
+    }
+
+    /// Lance une reconnexion si la configuration l'autorise et qu'aucune
+    /// tentative n'a deja eu lieu.
+    fn reconnect_if_allowed(&mut self, now: f64) {
+        if !self.config.proton_pass.auto_login || !self.auto_login_armed {
+            return;
+        }
+        self.begin_login(now);
+    }
+
+    /// Demarre `pass-cli login` et previent l'utilisateur.
+    ///
+    /// Le flux est web: `pass-cli` imprime une adresse, que `pass::login`
+    /// ouvre dans le navigateur des qu'elle parait. Aucun identifiant ne passe
+    /// par sshpass-gui.
+    fn begin_login(&mut self, now: f64) {
+        if self.login.is_running() {
+            return;
+        }
+        self.auto_login_armed = false;
+        let cli = self.cli();
+        match self.login.start(&cli) {
+            Ok(()) => self.toast(
+                "Session Proton Pass fermee: reconnexion, le navigateur va s'ouvrir.",
+                ToastKind::Info,
+                now,
+            ),
+            Err(err) => {
+                log::error!("reconnexion Proton Pass impossible: {err}");
+                self.toast(
+                    format!("Reconnexion impossible: {err}"),
+                    ToastKind::Error,
+                    now,
+                );
+            }
+        }
+    }
+
+    /// Fait avancer le flux de reconnexion et sonde de nouveau a la fin.
+    fn poll_login(&mut self, now: f64) {
+        match self.login.poll() {
+            Some(LoginOutcome::Succeeded) => {
+                self.toast("Session Proton Pass rouverte.", ToastKind::Success, now);
+                // La reussite du processus ne prouve pas que la session soit
+                // exploitable: on la resonde plutot que de l'affirmer.
+                self.probe_session(now);
+            }
+            Some(LoginOutcome::Failed(detail)) => {
+                self.pass_status = PassStatus::LoggedOut {
+                    detail: detail.clone(),
+                };
+                self.toast(
+                    format!("Reconnexion Proton Pass abandonnee: {detail}"),
+                    ToastKind::Error,
+                    now,
+                );
+            }
+            None => {}
+        }
+    }
+
+    /// Verifie periodiquement que la session tient toujours.
+    fn check_session(&mut self, now: f64) {
+        let idle = now - self.last_session_check >= SESSION_CHECK_INTERVAL;
+        let busy = self.login.is_running()
+            || matches!(self.pass_status, PassStatus::Probing)
+            || self.pass.is_busy();
+        if idle && !busy {
+            self.probe_session(now);
+        }
+    }
+
+    /// Envoie une detection complete (binaire + session).
+    fn probe_session(&mut self, now: f64) {
+        self.last_session_check = now;
+        let cli = self.cli();
+        self.pass.send(PassRequest::Probe(cli));
     }
 
     /// Relit un coffre dont le contenu vient de changer.
@@ -697,10 +908,14 @@ impl SshpassApp {
                 }
                 Action::ShowHome => self.active_tab = None,
                 Action::RefreshVaults => {
-                    let cli = self.cli();
                     self.pass_status = PassStatus::Probing;
-                    self.pass.send(PassRequest::Probe(cli));
+                    // Un rafraichissement manuel rouvre le droit a une
+                    // reconnexion: c'est justement ce que l'utilisateur
+                    // demande en cliquant.
+                    self.auto_login_armed = true;
+                    self.probe_session(now);
                 }
+                Action::ReconnectPass => self.begin_login(now),
                 Action::LoadItems(vault) => {
                     if !vault.is_empty() && self.loading_items.insert(vault.clone()) {
                         let cli = self.cli();
@@ -852,6 +1067,8 @@ impl eframe::App for SshpassApp {
         let now = ctx.input(|i| i.time);
 
         self.agents.poll();
+        self.poll_login(now);
+        self.check_session(now);
         self.poll_pass(now);
         self.poll_terminals(&ctx);
         self.advance_waiting_tabs(&ctx, now);
@@ -875,18 +1092,28 @@ impl eframe::App for SshpassApp {
         // Un appel `pass-cli` ou un agent en cours de demarrage n'emet aucun
         // evenement egui: on programme un reveil pour ne pas figer l'affichage.
         let waiting = self.pass.is_busy()
+            || self.login.is_running()
             || self
                 .tabs
                 .iter()
                 .any(|t| matches!(t.state, TabState::WaitingAgent { .. }));
         if waiting || !self.toasts.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(120));
+        } else {
+            // egui ne redessine pas une fenetre inerte: sans reveil programme,
+            // la ronde de session n'aurait lieu qu'au gre des interactions et
+            // une session expirant la nuit ne serait vue qu'au matin.
+            let remaining = SESSION_CHECK_INTERVAL - (now - self.last_session_check);
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                remaining.clamp(1.0, SESSION_CHECK_INTERVAL),
+            ));
         }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.tabs.clear();
         self.agents.stop_all();
+        self.login.cancel();
     }
 }
 
@@ -919,9 +1146,33 @@ mod tests {
     }
 
     #[test]
-    fn pass_status_availability() {
-        assert!(PassStatus::Available("1.0".into()).is_available());
+    fn only_an_open_session_counts_as_available() {
+        let ready = PassStatus::Ready {
+            version: "1.0".into(),
+            account: "alex@proton.me".into(),
+        };
+        assert!(ready.is_available());
+        assert!(ready.summary().contains("alex@proton.me"));
+
+        // Le binaire repond, mais rien n'est utilisable pour autant.
+        assert!(!PassStatus::LoggedOut {
+            detail: "not logged in".into()
+        }
+        .is_available());
+        assert!(!PassStatus::Locked {
+            detail: "session is locked".into()
+        }
+        .is_available());
         assert!(!PassStatus::Probing.is_available());
         assert!(!PassStatus::Missing("boum".into()).is_available());
+    }
+
+    #[test]
+    fn summary_stays_readable_without_an_account() {
+        let anonymous = PassStatus::Ready {
+            version: "pass-cli 1.2".into(),
+            account: String::new(),
+        };
+        assert_eq!(anonymous.summary(), "Session ouverte — pass-cli 1.2");
     }
 }
