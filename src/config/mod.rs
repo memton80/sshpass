@@ -102,6 +102,14 @@ pub struct ProtonPassConfig {
     pub agent_mode: AgentMode,
     /// Intervalle de rafraichissement des cles de l'agent, en secondes.
     pub refresh_interval: u64,
+    /// Relance `pass-cli login` toute seule quand la session est fermee, et
+    /// ouvre le lien d'authentification dans le navigateur.
+    ///
+    /// Active par defaut: une session Proton Pass ne survit pas a l'arret de
+    /// la machine, et sans reconnexion l'application n'a plus acces a rien.
+    /// Se desactive pour les postes ou l'ouverture d'un navigateur n'est pas
+    /// souhaitable.
+    pub auto_login: bool,
     /// Coffre propose par defaut lors de la creation d'une connexion.
     pub default_vault: Option<String>,
 }
@@ -112,6 +120,7 @@ impl Default for ProtonPassConfig {
             binary: "pass-cli".to_string(),
             agent_mode: AgentMode::default(),
             refresh_interval: 3600,
+            auto_login: true,
             default_vault: None,
         }
     }

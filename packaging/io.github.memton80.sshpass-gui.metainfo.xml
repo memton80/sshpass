@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Metadonnees AppStream: c'est ce fichier, et lui seul, que lisent les
+  logitheques (KDE Discover, GNOME Logiciels, elementary AppCenter) pour
+  afficher le nom, l'auteur, le resume et l'historique des versions.
+
+  Sans lui, une logitheque ne dispose que de ce que porte le paquet lui-meme
+  — un nom de fichier et un resume — d'ou le « Auteur inconnu » affiche par
+  Discover. Il est installe dans /usr/share/metainfo/ par le .deb, le .rpm et
+  l'AppImage, et valide en integration continue par `appstreamcli validate`.
+-->
+<component type="desktop-application">
+  <id>io.github.memton80.sshpass-gui</id>
+
+  <name>sshpass-gui</name>
+  <!--
+    Resume: une seule phrase, sans point final ni article initial, c'est la
+    regle AppStream. C'est la ligne affichee sous le nom dans les logitheques.
+  -->
+  <summary>Gestionnaire de connexions SSH adosse a Proton Pass</summary>
+  <summary xml:lang="en">SSH connection manager backed by Proton Pass</summary>
+
+  <developer id="io.github.memton80">
+    <name>memton80</name>
+  </developer>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <launchable type="desktop-id">sshpass-gui.desktop</launchable>
+
+  <!--
+    La langue par defaut est le francais, comme dans le fichier .desktop et
+    dans l'interface. Les variantes anglaises sont marquees `xml:lang`: la
+    traduction se fait paragraphe par paragraphe, un second bloc
+    `<description>` etant refuse par AppStream.
+  -->
+  <description>
+    <p>
+      sshpass-gui ouvre, range et rouvre vos connexions SSH depuis une seule
+      fenetre, avec un terminal integre par onglet. Les cles et les mots de
+      passe restent dans Proton Pass: la configuration locale ne conserve que
+      des references vers les items du coffre, jamais un secret.
+    </p>
+    <p xml:lang="en">
+      sshpass-gui opens, organises and reopens your SSH connections from a
+      single window, with an embedded terminal per tab. Keys and passwords stay
+      in Proton Pass: the local configuration only holds references to vault
+      items, never a secret.
+    </p>
+    <p>Fonctions principales:</p>
+    <p xml:lang="en">Main features:</p>
+    <ul>
+      <li>Connexions rangees en dossiers, favoris, tags et recherche instantanee</li>
+      <li xml:lang="en">Connections in nestable folders, favourites, tags and instant search</li>
+      <li>Terminal xterm-256color par onglet, avec historique et copier-coller</li>
+      <li xml:lang="en">An xterm-256color terminal per tab, with scrollback and clipboard</li>
+      <li>Mots de passe et cles SSH enregistres directement dans Proton Pass</li>
+      <li xml:lang="en">Passwords and SSH keys written straight into Proton Pass</li>
+      <li>Agent SSH Proton Pass pilote par coffre, une socket par coffre</li>
+      <li xml:lang="en">A Proton Pass SSH agent per vault, each on its own socket</li>
+      <li>Session Proton Pass surveillee et rouverte automatiquement</li>
+      <li xml:lang="en">The Proton Pass session is watched and reopened automatically</li>
+    </ul>
+    <p>
+      Application 100 % Rust native: ni Electron, ni webview, ni GTK, ni Qt.
+      Necessite le binaire Proton Pass CLI (pass-cli) et un client OpenSSH 8.4
+      ou plus recent.
+    </p>
+    <p xml:lang="en">
+      A fully native Rust application: no Electron, no webview, no GTK, no Qt.
+      Requires the Proton Pass CLI (pass-cli) and an OpenSSH 8.4 or newer
+      client.
+    </p>
+  </description>
+
+  <!-- Doit rester identique au fichier .desktop, sinon les logitheques et le
+       menu classent l'application a deux endroits differents. -->
+  <categories>
+    <category>Network</category>
+    <category>RemoteAccess</category>
+  </categories>
+
+  <keywords>
+    <keyword>ssh</keyword>
+    <keyword>terminal</keyword>
+    <keyword>proton</keyword>
+    <keyword>pass</keyword>
+    <keyword translate="no">sftp</keyword>
+  </keywords>
+
+  <url type="homepage">https://github.com/memton80/sshpass</url>
+  <url type="bugtracker">https://github.com/memton80/sshpass/issues</url>
+  <url type="vcs-browser">https://github.com/memton80/sshpass</url>
+
+  <screenshots>
+    <!--
+      Les captures doivent etre des URL: une logitheque les telecharge, elle ne
+      lit pas le disque. Elles pointent sur la branche `main` du depot.
+    -->
+    <screenshot type="default">
+      <caption>Accueil: barre laterale, dossiers, favoris et connexions recentes</caption>
+      <caption xml:lang="en">Home: sidebar, folders, favourites and recent connections</caption>
+      <image type="source">https://raw.githubusercontent.com/memton80/sshpass/main/docs/captures/accueil.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Terminal integre: couleurs ANSI, gras, souligne et historique</caption>
+      <caption xml:lang="en">Embedded terminal: ANSI colours, bold, underline and scrollback</caption>
+      <image type="source">https://raw.githubusercontent.com/memton80/sshpass/main/docs/captures/terminal.png</image>
+    </screenshot>
+  </screenshots>
+
+  <!--
+    L'application n'affiche aucun contenu susceptible d'etre classe: toutes les
+    cases sont a zero. Sans cette balise, Discover affiche « classification
+    inconnue ».
+  -->
+  <content_rating type="oars-1.1" />
+
+  <!--
+    Materiel minimal, pour que les logitheques mobiles n'annoncent pas une
+    compatibilite qu'elles n'ont pas: l'interface vise le clavier et la souris.
+  -->
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </recommends>
+  <requires>
+    <display_length compare="ge">760</display_length>
+  </requires>
+
+  <releases>
+    <release version="1.0.0" date="2026-09-09">
+      <description>
+        <p>Premiere version stable.</p>
+        <p xml:lang="en">First stable release.</p>
+        <ul>
+          <li>Mots de passe et cles SSH enregistres directement dans Proton Pass</li>
+          <li xml:lang="en">Passwords and SSH keys written straight into Proton Pass</li>
+          <li>Session Proton Pass surveillee et rouverte automatiquement</li>
+          <li xml:lang="en">The Proton Pass session is watched and reopened automatically</li>
+          <li>Metadonnees AppStream pour les logitheques</li>
+          <li xml:lang="en">AppStream metadata for software centres</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,10 +1,13 @@
 [package]
 name = "sshpass-gui"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.92"
-description = "Gestionnaire de connexions SSH 100% Rust natif, terminal integre et coffre Proton Pass"
+# Resume court, repris a l'identique par le .deb, le .rpm, le fichier
+# .desktop et les metadonnees AppStream.
+description = "Gestionnaire de connexions SSH adosse a Proton Pass"
 license = "GPL-3.0-or-later"
+homepage = "https://github.com/memton80/sshpass"
 repository = "https://github.com/memton80/sshpass"
 readme = "README.md"
 authors = ["memton80"]
@@ -67,6 +70,14 @@ assets = [
     ["target/release/sshpass-gui", "usr/bin/", "755"],
     ["packaging/sshpass-gui.desktop", "usr/share/applications/", "644"],
     ["packaging/sshpass-gui.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    # Metadonnees des logitheques: nom, auteur, resume, captures, versions.
+    # Sans ce fichier, Discover et GNOME Logiciels n'ont que le nom du paquet
+    # et affichent « Auteur inconnu ».
+    [
+        "packaging/io.github.memton80.sshpass-gui.metainfo.xml",
+        "usr/share/metainfo/",
+        "644",
+    ],
     ["README.md", "usr/share/doc/sshpass-gui/README.md", "644"],
 ]
 
@@ -80,12 +91,17 @@ assets = [
 # plutot que par nom de paquet, les noms differant entre Fedora et openSUSE.
 # ---------------------------------------------------------------------------
 [package.metadata.generate-rpm]
-summary = "Gestionnaire de connexions SSH avec terminal integre et Proton Pass"
+summary = "Gestionnaire de connexions SSH adosse a Proton Pass"
+# `vendor` et `url` remplissent les champs que rpm affiche — et que PackageKit
+# relaie aux logitheques quand aucune donnee AppStream n'est encore indexee.
+vendor = "memton80"
+url = "https://github.com/memton80/sshpass"
 auto-req = "builtin"
 assets = [
     { source = "target/release/sshpass-gui", dest = "/usr/bin/sshpass-gui", mode = "755" },
     { source = "packaging/sshpass-gui.desktop", dest = "/usr/share/applications/sshpass-gui.desktop", mode = "644" },
     { source = "packaging/sshpass-gui.png", dest = "/usr/share/icons/hicolor/256x256/apps/sshpass-gui.png", mode = "644" },
+    { source = "packaging/io.github.memton80.sshpass-gui.metainfo.xml", dest = "/usr/share/metainfo/io.github.memton80.sshpass-gui.metainfo.xml", mode = "644" },
     { source = "README.md", dest = "/usr/share/doc/sshpass-gui/README.md", mode = "644", doc = true },
             { source = "LICENSE", dest = "/usr/share/doc/sshpass-gui/LICENSE", mode = "644", doc = true },
 ]

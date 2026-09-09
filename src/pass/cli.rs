@@ -6,12 +6,39 @@
 //! volontairement tolerants: les noms de champs sont normalises (minuscules,
 //! sans `_` ni `-`) et plusieurs alias sont acceptes, et un tableau peut etre
 //! renvoye directement ou enveloppe dans un objet (`{"vaults": [...]}`).
+//!
+//! ## Ecriture
+//!
+//! En plus de la lecture, ce module **cree** des items: un identifiant pour
+//! une connexion en mot de passe, une cle SSH importee ou generee. Regle de
+//! transmission des secrets:
+//!
+//! * creation d'un identifiant — le mot de passe part par **stdin**
+//!   (`item create login --from-template -`), jamais par la ligne de commande,
+//!   donc jamais visible dans `/proc/<pid>/cmdline`;
+//! * cle SSH — sshpass-gui ne voit jamais la cle: `import` recoit un
+//!   **chemin**, `generate` fait tout le travail cote `pass-cli`;
+//! * mise a jour d'un mot de passe existant — `pass-cli item update` n'accepte
+//!   les valeurs que par `--field cle=valeur`, donc sur la ligne de commande.
+//!   C'est la seule exception, elle est signalee dans l'interface et les
+//!   messages d'erreur sont expurges (`secret::redact`).
+//!
+//! ## Session
+//!
+//! Toutes les commandes ci-dessus supposent une session Proton Pass ouverte.
+//! Elle ne l'est pas eternellement: elle expire, et l'arret de la machine y met
+//! fin. `session()` la sonde avec `pass-cli info`, et distingue trois cas —
+//! ouverte, fermee (une reconnexion suffit, cf. `pass::login`), ou verrouillee
+//! par un code (`pass-cli session unlock`, qui exige une saisie humaine).
 
-use std::io::Read;
+use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+
+use crate::pass::secret::{redact, Secret};
 
 /// Delai au-dela duquel un appel `pass-cli` est considere comme bloque
 /// (session verrouillee attendant une saisie, reseau coupe...).
@@ -31,8 +58,43 @@ pub enum PassError {
     Timeout(String),
     #[error("sortie JSON illisible: {0}")]
     Json(String),
+    #[error("{0}")]
+    Invalid(String),
     #[error("erreur d'entree/sortie: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl PassError {
+    /// Texte le plus parlant de l'erreur: la sortie d'erreur de `pass-cli`
+    /// quand il en a produit une, sinon le message complet.
+    pub fn detail(&self) -> String {
+        match self {
+            PassError::Command { stderr, .. } if !stderr.is_empty() => stderr.clone(),
+            other => other.to_string(),
+        }
+    }
+
+    /// Vrai si l'echec vient d'une session fermee ou expiree.
+    ///
+    /// Seule la sortie d'erreur est examinee, jamais la commande: `item create
+    /// login` contient « login » sans rien dire de la session.
+    pub fn is_session_closed(&self) -> bool {
+        match self {
+            PassError::Command { stderr, .. } => {
+                !mentions(stderr, &LOCKED_SESSION_PHRASES)
+                    && mentions(stderr, &CLOSED_SESSION_PHRASES)
+            }
+            _ => false,
+        }
+    }
+
+    /// Vrai si l'echec vient d'une session verrouillee par un code.
+    pub fn is_session_locked(&self) -> bool {
+        match self {
+            PassError::Command { stderr, .. } => mentions(stderr, &LOCKED_SESSION_PHRASES),
+            _ => false,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, PassError>;
@@ -110,6 +172,211 @@ impl Item {
     }
 }
 
+/// Ce qu'il faut ecrire dans un coffre pour qu'un identifiant y soit
+/// exploitable: un titre, de quoi reconnaitre le compte, et le secret.
+///
+/// Le champ `url` sert a ce que l'item soit **rempli comme il faut** cote
+/// Proton Pass — l'application y affiche le service concerne au lieu d'un
+/// titre nu.
+#[derive(Debug, Default)]
+pub struct LoginDraft {
+    pub title: String,
+    pub username: String,
+    pub url: String,
+    pub password: Secret,
+}
+
+impl LoginDraft {
+    /// Brouillon pour une connexion SSH: l'URL `ssh://user@hote:port` fait le
+    /// lien entre l'item du coffre et la machine.
+    pub fn for_ssh(title: &str, user: &str, host: &str, port: u16, password: Secret) -> Self {
+        let host = host.trim();
+        let user = user.trim();
+        let url = if host.is_empty() {
+            String::new()
+        } else if user.is_empty() {
+            format!("ssh://{host}:{port}")
+        } else {
+            format!("ssh://{user}@{host}:{port}")
+        };
+        Self {
+            title: title.trim().to_string(),
+            username: user.to_string(),
+            url,
+            password,
+        }
+    }
+
+    /// Gabarit JSON attendu par `item create login --from-template`.
+    ///
+    /// Les champs vides sont omis plutot qu'envoyes vides: un `username` vide
+    /// afficherait une ligne inutile dans Proton Pass.
+    pub fn template(&self) -> Vec<u8> {
+        let mut object = serde_json::Map::new();
+        object.insert("title".into(), Value::String(self.title.trim().to_string()));
+        if !self.username.trim().is_empty() {
+            object.insert(
+                "username".into(),
+                Value::String(self.username.trim().to_string()),
+            );
+        }
+        object.insert(
+            "password".into(),
+            Value::String(self.password.expose().to_string()),
+        );
+        if !self.url.trim().is_empty() {
+            object.insert(
+                "urls".into(),
+                Value::Array(vec![Value::String(self.url.trim().to_string())]),
+            );
+        }
+        serde_json::to_vec(&Value::Object(object)).unwrap_or_default()
+    }
+}
+
+/// Algorithmes acceptes par `item create ssh-key generate`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SshKeyType {
+    #[default]
+    Ed25519,
+    Rsa2048,
+    Rsa4096,
+}
+
+impl SshKeyType {
+    pub const ALL: [SshKeyType; 3] = [
+        SshKeyType::Ed25519,
+        SshKeyType::Rsa2048,
+        SshKeyType::Rsa4096,
+    ];
+
+    /// Valeur passee a `--key-type`.
+    pub fn flag(self) -> &'static str {
+        match self {
+            SshKeyType::Ed25519 => "ed25519",
+            SshKeyType::Rsa2048 => "rsa2048",
+            SshKeyType::Rsa4096 => "rsa4096",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SshKeyType::Ed25519 => "Ed25519",
+            SshKeyType::Rsa2048 => "RSA 2048",
+            SshKeyType::Rsa4096 => "RSA 4096",
+        }
+    }
+}
+
+/// D'ou vient la cle SSH qu'on range dans le coffre.
+#[derive(Debug, Clone)]
+pub enum SshKeySource {
+    /// Un fichier de cle privee deja sur le disque.
+    Import(std::path::PathBuf),
+    /// Une paire generee par Proton Pass; le commentaire aide a la reconnaitre.
+    Generate {
+        key_type: SshKeyType,
+        comment: String,
+    },
+}
+
+/// Verifie qu'une valeur obligatoire est renseignee.
+fn require(value: &str, message: &str) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err(PassError::Invalid(message.to_string()))
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+/// Premiere ligne utile de la sortie de `pass-cli`, ou un repli.
+///
+/// `item create` affiche un recapitulatif dont le format n'est pas fige; on
+/// n'en montre que la premiere ligne, et on retombe sur notre propre phrase
+/// si la commande est restee muette.
+fn summarize(output: &str, fallback: &str) -> String {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Etat de la session Proton Pass, tel que `pass-cli info` le laisse voir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Session {
+    /// Session utilisable. `account` est l'adresse ou le nom rapporte, s'il y
+    /// en a un — la sortie de `info` n'est pas un format fige.
+    Open { account: String },
+    /// Session absente ou expiree: `pass-cli login` la retablit.
+    Closed(String),
+    /// Session authentifiee mais verrouillee par un code. Rien d'automatique
+    /// n'est possible: `session unlock` reclame une saisie.
+    Locked(String),
+}
+
+/// Resultat d'une detection complete: le binaire et l'etat de sa session.
+#[derive(Debug, Clone)]
+pub struct Probe {
+    pub version: String,
+    pub session: Session,
+}
+
+/// Echec deja mis en forme pour l'interface, avec ce qu'elle doit en deduire.
+///
+/// Le booleen evite que chaque appelant ait a refaire l'analyse du texte
+/// d'erreur pour savoir si la session est en cause.
+#[derive(Debug, Clone)]
+pub struct PassFailure {
+    pub message: String,
+    /// La session est fermee: une reconnexion reglerait le probleme.
+    pub session_closed: bool,
+}
+
+impl From<PassError> for PassFailure {
+    fn from(err: PassError) -> Self {
+        Self {
+            session_closed: err.is_session_closed(),
+            message: err.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for PassFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// Tournures par lesquelles `pass-cli` signale une session absente ou expiree.
+///
+/// Aucun code de sortie ne distingue les motifs d'echec: seul le texte le
+/// fait. La liste est volontairement large, dans le meme esprit que les
+/// analyseurs JSON — mieux vaut proposer une reconnexion de trop qu'aucune.
+const CLOSED_SESSION_PHRASES: [&str; 10] = [
+    "not logged in",
+    "no session",
+    "no active session",
+    "session expired",
+    "session not found",
+    "invalid session",
+    "not authenticated",
+    "authentication required",
+    "please log in",
+    "unauthorized",
+];
+
+/// Tournures d'une session verrouillee. Testees en premier: un message de
+/// verrouillage peut lui aussi parler d'autorisation.
+const LOCKED_SESSION_PHRASES: [&str; 3] = ["session is locked", "session locked", "unlock"];
+
+fn mentions(haystack: &str, phrases: &[&str]) -> bool {
+    let haystack = haystack.to_lowercase();
+    phrases.iter().any(|phrase| haystack.contains(phrase))
+}
+
 /// Client `pass-cli`.
 #[derive(Debug, Clone)]
 pub struct PassCli {
@@ -133,6 +400,38 @@ impl PassCli {
     pub fn version(&self) -> Result<String> {
         let out = self.run(&["--version".into()])?;
         Ok(out.trim().to_string())
+    }
+
+    /// Detection complete: le binaire repond, et sa session est-elle ouverte.
+    pub fn probe(&self) -> Result<Probe> {
+        Ok(Probe {
+            version: self.version()?,
+            session: self.session()?,
+        })
+    }
+
+    /// Etat de la session, lu avec `pass-cli info`.
+    ///
+    /// Un `info` qui echoue est la situation **normale** quand la session est
+    /// fermee: ce n'est donc pas une erreur, mais un `Session::Closed` portant
+    /// les mots de `pass-cli`. Seuls les echecs qui ne disent rien de la
+    /// session — binaire introuvable, delai depasse, entree/sortie —
+    /// remontent en `Err`, car une reconnexion n'y changerait rien.
+    pub fn session(&self) -> Result<Session> {
+        match self.run(&["info".into()]) {
+            Ok(out) => Ok(Session::Open {
+                account: parse_account(&out),
+            }),
+            Err(err @ PassError::Command { .. }) => {
+                let detail = err.detail();
+                if err.is_session_locked() {
+                    Ok(Session::Locked(detail))
+                } else {
+                    Ok(Session::Closed(detail))
+                }
+            }
+            Err(other) => Err(other),
+        }
     }
 
     /// `pass-cli vault list --output json`
@@ -159,16 +458,168 @@ impl PassCli {
         parse_items(&out)
     }
 
-    // Note: aucune methode ne lit un secret. Les mots de passe sont fournis a
-    // `ssh` par le script SSH_ASKPASS (cf. `pass::write_askpass_script`), qui
-    // execute `pass-cli` lui-meme: la valeur ne transite jamais par sshpass-gui.
+    // Note: aucune methode ne **lit** un secret. Les mots de passe sont fournis
+    // a `ssh` par le script SSH_ASKPASS (cf. `pass::write_askpass_script`), qui
+    // execute `pass-cli` lui-meme: la valeur ne remonte jamais dans sshpass-gui.
+    // Les methodes d'ecriture ci-dessous font le chemin inverse, une seule fois
+    // et sans retour.
+
+    /// Cree un identifiant dans un coffre.
+    ///
+    /// `pass-cli item create login --vault-name <coffre> --from-template -`
+    ///
+    /// Le brouillon est serialise en JSON et pousse dans **stdin**: le mot de
+    /// passe n'apparait donc pas dans la ligne de commande, la ou n'importe
+    /// quel processus de la machine pourrait le lire.
+    pub fn create_login(&self, vault: &str, draft: &LoginDraft) -> Result<String> {
+        let title = require(&draft.title, "Le titre de l'item est obligatoire.")?;
+        let vault = require(vault, "Choisissez un coffre Proton Pass.")?;
+        if draft.password.is_empty() {
+            return Err(PassError::Invalid("Le mot de passe est vide.".into()));
+        }
+
+        let args = vec![
+            "item".to_string(),
+            "create".to_string(),
+            "login".to_string(),
+            "--vault-name".to_string(),
+            vault,
+            "--from-template".to_string(),
+            "-".to_string(),
+        ];
+        let out = self.run_with_input(&args, Some(draft.template()))?;
+        Ok(summarize(&out, &format!("« {title} » cree dans le coffre")))
+    }
+
+    /// Remplace le mot de passe d'un item existant.
+    ///
+    /// `pass-cli item update --vault-name V --item-title T --field password=…`
+    ///
+    /// **Seul appel ou un secret passe par la ligne de commande**: `item
+    /// update` n'offre aucune forme `--from-template`. La valeur est donc
+    /// visible dans `/proc/<pid>/cmdline` pendant l'appel, pour les processus
+    /// du meme utilisateur. Les messages d'erreur, eux, sont expurges.
+    pub fn set_login_password(&self, vault: &str, item: &str, password: &Secret) -> Result<String> {
+        let item = require(item, "Le titre de l'item est obligatoire.")?;
+        let vault = require(vault, "Choisissez un coffre Proton Pass.")?;
+        if password.is_empty() {
+            return Err(PassError::Invalid("Le mot de passe est vide.".into()));
+        }
+
+        let args = vec![
+            "item".to_string(),
+            "update".to_string(),
+            "--vault-name".to_string(),
+            vault,
+            "--item-title".to_string(),
+            item.clone(),
+            "--field".to_string(),
+            format!("password={}", password.expose()),
+        ];
+        let out = self.run(&args)?;
+        Ok(summarize(
+            &out,
+            &format!("mot de passe de « {item} » mis a jour"),
+        ))
+    }
+
+    /// Importe une cle privee existante dans un coffre.
+    ///
+    /// `pass-cli item create ssh-key import --from-private-key <chemin> …`
+    ///
+    /// sshpass-gui ne lit pas le fichier: il ne transmet qu'un chemin, et
+    /// `pass-cli` s'occupe du reste.
+    pub fn import_ssh_key(&self, vault: &str, title: &str, key_file: &Path) -> Result<String> {
+        let title = require(title, "Le titre de l'item est obligatoire.")?;
+        let vault = require(vault, "Choisissez un coffre Proton Pass.")?;
+        if !key_file.exists() {
+            return Err(PassError::Invalid(format!(
+                "Fichier de cle introuvable: {}",
+                key_file.display()
+            )));
+        }
+
+        let args = vec![
+            "item".to_string(),
+            "create".to_string(),
+            "ssh-key".to_string(),
+            "import".to_string(),
+            "--vault-name".to_string(),
+            vault,
+            "--title".to_string(),
+            title.clone(),
+            "--from-private-key".to_string(),
+            key_file.to_string_lossy().into_owned(),
+        ];
+        let out = self.run(&args)?;
+        Ok(summarize(
+            &out,
+            &format!("« {title} » importee dans le coffre"),
+        ))
+    }
+
+    /// Fait generer une paire de cles par Proton Pass.
+    ///
+    /// `pass-cli item create ssh-key generate --key-type <type> …`
+    ///
+    /// La cle privee nait dans le coffre et n'en sort pas: elle ne touche ni
+    /// le disque local ni la memoire de sshpass-gui.
+    pub fn generate_ssh_key(
+        &self,
+        vault: &str,
+        title: &str,
+        key_type: SshKeyType,
+        comment: &str,
+    ) -> Result<String> {
+        let title = require(title, "Le titre de l'item est obligatoire.")?;
+        let vault = require(vault, "Choisissez un coffre Proton Pass.")?;
+
+        let mut args = vec![
+            "item".to_string(),
+            "create".to_string(),
+            "ssh-key".to_string(),
+            "generate".to_string(),
+            "--vault-name".to_string(),
+            vault,
+            "--title".to_string(),
+            title.clone(),
+            "--key-type".to_string(),
+            key_type.flag().to_string(),
+        ];
+        let comment = comment.trim();
+        if !comment.is_empty() {
+            args.push("--comment".to_string());
+            args.push(comment.to_string());
+        }
+        let out = self.run(&args)?;
+        Ok(summarize(
+            &out,
+            &format!("cle {} « {title} » generee", key_type.label()),
+        ))
+    }
 
     /// Execute `pass-cli` et renvoie sa sortie standard.
     fn run(&self, args: &[String]) -> Result<String> {
-        let display = format!("{} {}", self.binary, args.join(" "));
+        self.run_with_input(args, None)
+    }
+
+    /// Variante avec une entree standard: `input` est ecrit dans le tube puis
+    /// efface, et le tube ferme pour signaler la fin des donnees.
+    fn run_with_input(&self, args: &[String], input: Option<Vec<u8>>) -> Result<String> {
+        // Les arguments sont expurges: `item update` en porte un qui contient
+        // un mot de passe, et cette chaine finit dans les messages d'erreur.
+        let display = format!(
+            "{} {}",
+            self.binary,
+            args.iter().map(|a| redact(a)).collect::<Vec<_>>().join(" ")
+        );
         let mut child = match Command::new(&self.binary)
             .args(args)
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -178,6 +629,25 @@ impl PassCli {
                 return Err(PassError::NotFound(self.binary.clone()))
             }
             Err(err) => return Err(PassError::Io(err)),
+        };
+
+        // L'ecriture part dans un thread: `pass-cli` peut ne lire son entree
+        // qu'apres avoir deverrouille la session, et un `write_all` direct
+        // bloquerait le compte a rebours du delai.
+        let mut stdin_thread = match (input, child.stdin.take()) {
+            (Some(mut bytes), Some(mut pipe)) => Some(std::thread::spawn(move || {
+                let _ = pipe.write_all(&bytes);
+                let _ = pipe.flush();
+                // Fermeture explicite: sans EOF, `pass-cli` attendrait la suite.
+                drop(pipe);
+                bytes.fill(0);
+            })),
+            // Pas de tube alors qu'on avait des donnees: on les efface quand meme.
+            (Some(mut bytes), None) => {
+                bytes.fill(0);
+                None
+            }
+            (None, _) => None,
         };
 
         // La sortie est drainee dans des threads dedies: sans cela un binaire
@@ -206,12 +676,20 @@ impl PassCli {
                 None if Instant::now() >= deadline => {
                     let _ = child.kill();
                     let _ = child.wait();
+                    // Le tube est ferme par la mort du processus: l'ecriture
+                    // rend la main sur EPIPE, la jointure ne peut pas coincer.
+                    if let Some(handle) = stdin_thread.take() {
+                        let _ = handle.join();
+                    }
                     return Err(PassError::Timeout(display));
                 }
                 None => std::thread::sleep(Duration::from_millis(20)),
             }
         };
 
+        if let Some(handle) = stdin_thread {
+            let _ = handle.join();
+        }
         let stdout = out_thread.join().unwrap_or_default();
         let stderr = err_thread.join().unwrap_or_default();
 
@@ -227,6 +705,35 @@ impl PassCli {
         }
         Ok(String::from_utf8_lossy(&stdout).into_owned())
     }
+}
+
+/// Compte rapporte par `pass-cli info`.
+///
+/// La sortie est faite pour etre lue par un humain (`- Email: x@proton.me`) et
+/// n'a pas de variante JSON documentee. L'analyse suit donc le meme principe
+/// que celle des items: on cherche des cles connues, normalisees, et l'absence
+/// de reponse n'est pas une erreur — c'est juste une pastille sans nom.
+fn parse_account(output: &str) -> String {
+    let mut fallback = String::new();
+    for line in output.lines() {
+        let line = line.trim().trim_start_matches(['-', '*']).trim();
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match normalize_key(key).as_str() {
+            "email" => return value.to_string(),
+            // Une session par jeton n'a pas d'adresse: son nom fait l'affaire.
+            "username" | "personalaccesstoken" if fallback.is_empty() => {
+                fallback = value.to_string()
+            }
+            _ => {}
+        }
+    }
+    fallback
 }
 
 /// Normalise un nom de champ: minuscules, sans separateurs.
@@ -437,6 +944,410 @@ mod tests {
             }
             other => panic!("attendu Command, obtenu {other:?}"),
         }
+    }
+
+    #[test]
+    fn account_is_read_from_the_human_output() {
+        let output = "- Release track: stable\n- ID: abc\n- Username: alex\n\
+                      - Email: alex@proton.me\n- Session has lock: no\n";
+        assert_eq!(parse_account(output), "alex@proton.me");
+    }
+
+    #[test]
+    fn account_falls_back_to_the_username() {
+        assert_eq!(parse_account("- Username: alex\n"), "alex");
+        // Une session par jeton n'a pas d'adresse.
+        assert_eq!(
+            parse_account("- Personal Access Token: ci-runner\n"),
+            "ci-runner"
+        );
+        // Rien d'exploitable n'est pas une erreur: la pastille reste muette.
+        assert_eq!(parse_account("bonjour\n- Session has lock: yes\n"), "");
+    }
+
+    #[test]
+    fn closed_and_locked_sessions_are_told_apart() {
+        let closed = |stderr: &str| PassError::Command {
+            command: "pass-cli info".into(),
+            code: "1".into(),
+            stderr: stderr.into(),
+        };
+
+        assert!(closed("Error: not logged in").is_session_closed());
+        assert!(closed("session expired, please log in again").is_session_closed());
+        assert!(closed("UNAUTHORIZED").is_session_closed());
+
+        // Une session verrouillee n'est pas une session fermee: relancer
+        // `login` ne servirait a rien, il faut le code de deverrouillage.
+        let locked = closed("Session is locked. Run `pass-cli session unlock`");
+        assert!(locked.is_session_locked());
+        assert!(!locked.is_session_closed());
+
+        // Une panne ordinaire ne doit pas declencher de reconnexion.
+        assert!(!closed("vault not found").is_session_closed());
+        assert!(!PassError::NotFound("pass-cli".into()).is_session_closed());
+        assert!(!PassError::Timeout("pass-cli info".into()).is_session_closed());
+    }
+
+    #[test]
+    fn the_command_line_never_decides_the_session_verdict() {
+        // « login » figure dans la commande, pas dans la sortie d'erreur:
+        // creer un identifiant qui echoue n'est pas une session fermee.
+        let err = PassError::Command {
+            command: "pass-cli item create login --vault-name V".into(),
+            code: "1".into(),
+            stderr: "vault not found".into(),
+        };
+        assert!(!err.is_session_closed());
+        assert!(!err.is_session_locked());
+    }
+
+    #[test]
+    fn failures_carry_the_session_verdict_to_the_interface() {
+        let failure = PassFailure::from(PassError::Command {
+            command: "pass-cli vault list".into(),
+            code: "1".into(),
+            stderr: "not logged in".into(),
+        });
+        assert!(failure.session_closed);
+        assert!(failure.to_string().contains("not logged in"));
+
+        let other = PassFailure::from(PassError::NotFound("pass-cli".into()));
+        assert!(!other.session_closed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_info_reports_a_closed_session_not_an_error() {
+        // `sh -c` sans `info` valide: le faux binaire echoue en disant qu'il
+        // n'y a pas de session, exactement comme `pass-cli` deconnecte.
+        let cli = PassCli::new("sh");
+        let out = cli
+            .run(&[
+                "-c".into(),
+                "echo 'Error: not logged in' >&2; exit 1".into(),
+            ])
+            .expect_err("doit echouer");
+        assert!(out.is_session_closed());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_probe_maps_the_three_outcomes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("sshpass-gui-session-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let make = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("ecriture");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+            PassCli::new(path.to_string_lossy().into_owned())
+        };
+
+        let open = make("open", "echo '- Email: alex@proton.me'");
+        assert_eq!(
+            open.session().expect("sonde"),
+            Session::Open {
+                account: "alex@proton.me".into()
+            }
+        );
+
+        let closed = make("closed", "echo 'Error: not logged in' >&2; exit 1");
+        assert!(matches!(closed.session(), Ok(Session::Closed(_))));
+
+        let locked = make("locked", "echo 'Session is locked' >&2; exit 1");
+        assert!(matches!(locked.session(), Ok(Session::Locked(_))));
+
+        // Un binaire absent reste une erreur: aucune reconnexion n'y changerait
+        // quoi que ce soit.
+        assert!(matches!(
+            PassCli::new("pass-cli-qui-n-existe-pas").session(),
+            Err(PassError::NotFound(_))
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ssh_login_draft_builds_a_usable_url() {
+        let draft = LoginDraft::for_ssh("web-01", "root", "10.0.0.4", 2222, Secret::new("s"));
+        assert_eq!(draft.url, "ssh://root@10.0.0.4:2222");
+        assert_eq!(draft.username, "root");
+        assert_eq!(draft.title, "web-01");
+
+        // Sans utilisateur, l'URL reste valide et pointe la machine.
+        let anonymous = LoginDraft::for_ssh("box", "  ", "example.com", 22, Secret::new("s"));
+        assert_eq!(anonymous.url, "ssh://example.com:22");
+
+        // Sans hote, pas d'URL inventee.
+        let hostless = LoginDraft::for_ssh("box", "root", "", 22, Secret::new("s"));
+        assert!(hostless.url.is_empty());
+    }
+
+    #[test]
+    fn login_template_carries_every_field() {
+        let draft = LoginDraft::for_ssh("web-01", "root", "10.0.0.4", 22, Secret::new("hunter2"));
+        let json: Value = serde_json::from_slice(&draft.template()).expect("json");
+        assert_eq!(json["title"], "web-01");
+        assert_eq!(json["username"], "root");
+        assert_eq!(json["password"], "hunter2");
+        assert_eq!(json["urls"][0], "ssh://root@10.0.0.4:22");
+    }
+
+    #[test]
+    fn login_template_omits_empty_fields() {
+        let draft = LoginDraft {
+            title: "Sans rien".into(),
+            username: "  ".into(),
+            url: String::new(),
+            password: Secret::new("x"),
+        };
+        let json: Value = serde_json::from_slice(&draft.template()).expect("json");
+        let object = json.as_object().expect("objet");
+        assert!(!object.contains_key("username"), "username vide envoye");
+        assert!(!object.contains_key("urls"), "urls vide envoye");
+        assert_eq!(object["title"], "Sans rien");
+    }
+
+    #[test]
+    fn writes_refuse_incomplete_input_without_spawning() {
+        // Le binaire n'existe pas: si la validation laissait passer, l'erreur
+        // serait `NotFound` et non `Invalid`.
+        let cli = PassCli::new("pass-cli-qui-n-existe-pas");
+        let draft = LoginDraft::for_ssh("titre", "root", "h", 22, Secret::new("s"));
+
+        assert!(matches!(
+            cli.create_login("  ", &draft),
+            Err(PassError::Invalid(_))
+        ));
+        let untitled = LoginDraft::for_ssh("", "root", "h", 22, Secret::new("s"));
+        assert!(matches!(
+            cli.create_login("Coffre", &untitled),
+            Err(PassError::Invalid(_))
+        ));
+        assert!(matches!(
+            cli.create_login(
+                "Coffre",
+                &LoginDraft::for_ssh("t", "", "h", 22, Secret::default())
+            ),
+            Err(PassError::Invalid(_))
+        ));
+        assert!(matches!(
+            cli.set_login_password("Coffre", "", &Secret::new("s")),
+            Err(PassError::Invalid(_))
+        ));
+        assert!(matches!(
+            cli.generate_ssh_key("", "t", SshKeyType::Ed25519, ""),
+            Err(PassError::Invalid(_))
+        ));
+        assert!(matches!(
+            cli.import_ssh_key("Coffre", "t", Path::new("/inexistant/id_ed25519")),
+            Err(PassError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn key_types_map_to_documented_flags() {
+        assert_eq!(SshKeyType::default(), SshKeyType::Ed25519);
+        assert_eq!(SshKeyType::Ed25519.flag(), "ed25519");
+        assert_eq!(SshKeyType::Rsa2048.flag(), "rsa2048");
+        assert_eq!(SshKeyType::Rsa4096.flag(), "rsa4096");
+        assert_eq!(SshKeyType::ALL.len(), 3);
+    }
+
+    #[test]
+    fn summary_falls_back_when_the_command_says_nothing() {
+        assert_eq!(summarize("  \n Item cree \n autre", "repli"), "Item cree");
+        assert_eq!(summarize("   \n\n", "repli"), "repli");
+    }
+
+    // Ces tests pilotent un vrai sous-processus via `sh`: ils n'ont de sens
+    // que la ou un shell POSIX existe.
+    #[cfg(unix)]
+    #[test]
+    fn stdin_reaches_the_process_and_is_closed() {
+        let cli = PassCli::new("sh");
+        // `cat` ne rend la main que sur EOF: ce test verifie a la fois que
+        // l'entree est transmise et que le tube est bien ferme derriere.
+        let out = cli
+            .run_with_input(
+                &["-c".into(), "cat".into()],
+                Some(b"{\"title\":\"x\"}".to_vec()),
+            )
+            .expect("doit reussir");
+        assert_eq!(out, "{\"title\":\"x\"}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_errors_never_echo_a_password() {
+        let cli = PassCli::new("sh");
+        let err = cli
+            .run(&[
+                "-c".into(),
+                "exit 1".into(),
+                "--field".into(),
+                "password=hunter2".into(),
+            ])
+            .expect_err("doit echouer");
+        let rendered = err.to_string();
+        assert!(!rendered.contains("hunter2"), "fuite: {rendered}");
+        assert!(rendered.contains("password=***"), "obtenu: {rendered}");
+    }
+
+    /// Faux `pass-cli`: journalise ses arguments et son entree standard, puis
+    /// repond comme le vrai. Permet de verifier ce qui est reellement envoye.
+    #[cfg(unix)]
+    fn stub_cli(name: &str) -> (PassCli, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "sshpass-gui-stub-{}-{name}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let script = dir.join("pass-cli");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{dir}/args'\ncat > '{dir}/stdin'\n\
+                 echo 'Item created'\n",
+                dir = dir.display()
+            ),
+        )
+        .expect("ecriture");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        (PassCli::new(script.to_string_lossy().into_owned()), dir)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn creating_a_login_sends_the_password_on_stdin_only() {
+        let (cli, dir) = stub_cli("create");
+        let draft = LoginDraft::for_ssh("web-01", "root", "10.0.0.4", 2222, Secret::new("hunter2"));
+        let summary = cli.create_login("SSH Keys", &draft).expect("creation");
+        assert_eq!(summary, "Item created");
+
+        let args = std::fs::read_to_string(dir.join("args")).expect("args");
+        let stdin = std::fs::read_to_string(dir.join("stdin")).expect("stdin");
+
+        // La commande documentee, avec le coffre vise.
+        let expected = [
+            "item",
+            "create",
+            "login",
+            "--vault-name",
+            "SSH Keys",
+            "--from-template",
+            "-",
+        ];
+        assert_eq!(args.lines().collect::<Vec<_>>(), expected);
+
+        // Le coeur du contrat: le secret est passe par l'entree standard, donc
+        // il n'a jamais figure dans `/proc/<pid>/cmdline`.
+        assert!(
+            !args.contains("hunter2"),
+            "mot de passe sur la ligne de commande: {args}"
+        );
+        let json: Value = serde_json::from_str(&stdin).expect("json");
+        assert_eq!(json["password"], "hunter2");
+        assert_eq!(json["title"], "web-01");
+        assert_eq!(json["username"], "root");
+        assert_eq!(json["urls"][0], "ssh://root@10.0.0.4:2222");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn importing_a_key_passes_a_path_and_never_its_content() {
+        let (cli, dir) = stub_cli("import");
+        let key = dir.join("id_ed25519");
+        std::fs::write(&key, "PRIVATE-KEY-CONTENT").expect("ecriture");
+
+        cli.import_ssh_key("SSH Keys", "web-01", &key)
+            .expect("import");
+        let args = std::fs::read_to_string(dir.join("args")).expect("args");
+        let stdin = std::fs::read_to_string(dir.join("stdin")).expect("stdin");
+
+        assert_eq!(
+            args.lines().collect::<Vec<_>>(),
+            [
+                "item",
+                "create",
+                "ssh-key",
+                "import",
+                "--vault-name",
+                "SSH Keys",
+                "--title",
+                "web-01",
+                "--from-private-key",
+                key.to_string_lossy().as_ref(),
+            ]
+        );
+        // La cle elle-meme n'a jamais ete lue par sshpass-gui.
+        assert!(!args.contains("PRIVATE-KEY-CONTENT"));
+        assert!(stdin.is_empty(), "entree standard non vide: {stdin}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generating_a_key_carries_type_and_comment() {
+        let (cli, dir) = stub_cli("generate");
+        cli.generate_ssh_key("SSH Keys", "web-01", SshKeyType::Rsa4096, "root@10.0.0.4")
+            .expect("generation");
+        let args = std::fs::read_to_string(dir.join("args")).expect("args");
+        assert_eq!(
+            args.lines().collect::<Vec<_>>(),
+            [
+                "item",
+                "create",
+                "ssh-key",
+                "generate",
+                "--vault-name",
+                "SSH Keys",
+                "--title",
+                "web-01",
+                "--key-type",
+                "rsa4096",
+                "--comment",
+                "root@10.0.0.4",
+            ]
+        );
+
+        // Sans commentaire, l'option est simplement absente.
+        cli.generate_ssh_key("SSH Keys", "web-01", SshKeyType::Ed25519, "  ")
+            .expect("generation");
+        let args = std::fs::read_to_string(dir.join("args")).expect("args");
+        assert!(!args.contains("--comment"), "option vide envoyee: {args}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn updating_a_password_uses_the_documented_field_syntax() {
+        let (cli, dir) = stub_cli("update");
+        cli.set_login_password("SSH Keys", "web-01", &Secret::new("hunter2"))
+            .expect("mise a jour");
+        let args = std::fs::read_to_string(dir.join("args")).expect("args");
+        assert_eq!(
+            args.lines().collect::<Vec<_>>(),
+            [
+                "item",
+                "update",
+                "--vault-name",
+                "SSH Keys",
+                "--item-title",
+                "web-01",
+                "--field",
+                "password=hunter2",
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]

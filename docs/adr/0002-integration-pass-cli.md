@@ -20,6 +20,11 @@ accepte `human` ou `json` sur les commandes que nous utilisons.
 | Demarrer un agent | `pass-cli ssh-agent start --vault-name <coffre> --socket-path <sock>` |
 | Charger dans l'agent existant | `pass-cli ssh-agent load --vault-name <coffre>` |
 
+Les commandes d'**ecriture** (`item create login`, `item create ssh-key`,
+`item update`) sont venues plus tard, avec leurs propres contraintes de
+transmission des secrets : voir
+[ADR 0007](0007-ecriture-dans-proton-pass.md).
+
 Sources: [`docs/commands/item.md`](https://github.com/protonpass/pass-cli/blob/main/docs/public/docs/commands/item.md),
 [`docs/commands/vault.md`](https://github.com/protonpass/pass-cli/blob/main/docs/public/docs/commands/vault.md),
 [`docs/commands/ssh-agent.md`](https://github.com/protonpass/pass-cli/blob/main/docs/public/docs/commands/ssh-agent.md).

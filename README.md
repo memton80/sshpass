@@ -20,6 +20,14 @@ et une emulation de terminal en Rust pur.
   couleurs 24 bits, gras et souligne.
 * **Proton Pass dans l'interface** : parcourir les coffres et leurs items,
   associer un item a une connexion, voir et piloter l'etat des agents SSH.
+* **Ecriture dans le coffre** : le mot de passe saisi dans la fiche part
+  directement dans Proton Pass (titre, utilisateur et URL `ssh://` compris), et
+  une cle SSH s'y importe ou s'y genere sans quitter l'application — voir
+  [ADR 0007](docs/adr/0007-ecriture-dans-proton-pass.md).
+* **Session surveillee** : une session Proton Pass ne survit pas a l'arret de
+  la machine. sshpass-gui la verifie au demarrage, toutes les cinq minutes et
+  a chaque appel qui echoue, puis relance `pass-cli login` et ouvre le lien
+  d'authentification — voir [ADR 0008](docs/adr/0008-session-proton-pass.md).
 * **CRUD des connexions** : creation, modification, suppression, deplacement
   entre dossiers, favoris et tags.
 * **Autocompletion** sur l'hote, l'utilisateur, le coffre et l'item, alimentee
@@ -90,6 +98,58 @@ cargo deb --no-build       # -> target/debian/
 cargo generate-rpm         # -> target/generate-rpm/
 ```
 
+### Metadonnees des logitheques
+
+`packaging/io.github.memton80.sshpass-gui.metainfo.xml` est le fichier
+**AppStream** installe dans `/usr/share/metainfo/` par le `.deb`, le `.rpm` et
+l'AppImage. C'est lui, et lui seul, que lisent KDE Discover, GNOME Logiciels et
+les autres logitheques pour afficher le nom, l'**auteur**, le resume, les
+captures et l'historique des versions. Sans lui, une logitheque ne dispose que
+du nom du paquet et affiche « Auteur inconnu ».
+
+Le resume court est repris a l'identique sur cinq surfaces — `description` de
+`Cargo.toml`, `summary` du RPM, `Comment` du `.desktop`, `<summary>` AppStream
+et la description du `.deb` — pour que l'application ne se decrive pas de deux
+facons selon l'outil qui l'affiche.
+
+Apres toute modification :
+
+```bash
+desktop-file-validate packaging/sshpass-gui.desktop
+appstreamcli validate --no-net --pedantic \
+  packaging/io.github.memton80.sshpass-gui.metainfo.xml
+```
+
+La CI rejoue ces deux validations, verifie que le metainfo contient bien une
+entree `<release>` pour la version de la caisse, et que le fichier est present
+dans le `.deb` et le `.rpm` livres. **Toute montee de version doit donc ajouter
+son `<release>`** dans le metainfo, sinon la CI echoue.
+
+Pour verifier ce qu'une logitheque affichera reellement :
+
+```bash
+sudo install -Dm644 packaging/io.github.memton80.sshpass-gui.metainfo.xml \
+  /usr/share/metainfo/io.github.memton80.sshpass-gui.metainfo.xml
+sudo appstreamcli refresh-cache --force
+appstreamcli dump io.github.memton80.sshpass-gui
+```
+
+#### Les permissions affichees
+
+Discover indique « Acces total — peut acceder a la totalite du systeme ». Ce
+n'est pas un oubli de metadonnee : c'est ce qu'affichent **tous** les paquets
+natifs (`.deb`, `.rpm`), qui ne sont pas places dans un bac a sable. Seuls
+Flatpak et Snap declarent des permissions fines, et un Flatpak n'aiderait pas
+ici : l'application lance `ssh` et `pass-cli` **de l'hote** et ouvre des
+sockets d'agent, ce qui exigerait `--talk-name=org.freedesktop.Flatpak`,
+c'est-a-dire une sortie de bac a sable — donc le meme « acces total », au prix
+d'un paquet plus fragile.
+
+Ce que l'application touche reellement est court : `~/.config/sshpass-gui/`
+pour sa configuration (jamais de secret), `$XDG_RUNTIME_DIR/sshpass-gui/` pour
+les sockets d'agent et les scripts askpass, et les processus `ssh` et
+`pass-cli`.
+
 ### Dependances declarees
 
 `winit`, `glutin` et `xkbcommon-dl` ouvrent leurs bibliotheques par `dlopen`,
@@ -117,9 +177,9 @@ Debian et Ubuntu distribuent deja un paquet **`sshpass`** : l'outil en ligne
 de commande qui fournit un mot de passe a `ssh` de maniere non interactive
 (version 1.09 dans `noble/universe`). Il n'a aucun rapport avec ce projet,
 mais il porterait le meme nom **et** installerait le meme
-`/usr/bin/sshpass` : les deux paquets ne pourraient pas coexister, et comme
-`1.09 > 0.1.0`, un `apt upgrade` remplacerait cette application par l'outil
-en ligne de commande.
+`/usr/bin/sshpass` : les deux paquets ne pourraient pas coexister, et un
+`apt upgrade` remplacerait l'un par l'autre selon lequel porte le plus grand
+numero de version.
 
 D'ou le nom `sshpass-gui` pour la caisse, le binaire, les paquets et le
 fichier `.desktop` — voir [ADR 0006](docs/adr/0006-renommage-sshpass-gui.md).
@@ -168,6 +228,42 @@ Trois modes d'agent, au choix dans les reglages :
 
 Detail de la strategie : [ADR 0003](docs/adr/0003-ssh-auth-sock.md).
 
+### Session et reconnexion
+
+Toutes les commandes `pass-cli` supposent une session ouverte, et cette session
+**ne survit pas a l'arret de la machine**. sshpass-gui la verifie avec
+`pass-cli info` :
+
+* au demarrage ;
+* toutes les cinq minutes, meme fenetre inactive ;
+* des qu'un appel echoue en signalant un probleme d'autorisation ;
+* avant d'ouvrir une connexion adossee au coffre — inutile d'ouvrir un onglet
+  qui echouera.
+
+Quand la session est fermee, `pass-cli login` est relance et **le lien
+d'authentification s'ouvre dans le navigateur**. Une fois le flux termine, la
+session est resondee et l'application repart. Aucun identifiant ne passe par
+sshpass-gui : tout se joue entre le navigateur et Proton.
+
+La pastille de la barre d'outils distingue les quatre etats :
+
+| Pastille | Etat | Quoi faire |
+| --- | --- | --- |
+| Verte | session ouverte | rien |
+| Orange « Session fermee » | expiree ou machine redemarree | rien, la reconnexion part seule |
+| Orange « Reconnexion... » | flux en cours | terminer dans le navigateur |
+| Rouge « Session verrouillee » | verrouillee par un code | `pass-cli session unlock` |
+
+Une tentative qui echoue **n'est jamais reessayee toute seule** : le panneau
+lateral affiche alors un bouton « Se reconnecter ». L'ouverture automatique du
+navigateur se desactive dans les reglages (`auto_login`) ; la detection, elle,
+continue. Si aucun ouvreur de liens n'est installe (`xdg-open`, `open`), le
+panneau affiche l'URL avec un bouton « Copier le lien ».
+
+Le verrouillage de session (`pass-cli session create-lock`) n'est pas
+automatisable : le code n'est connu que de l'utilisateur, et `session unlock`
+le demande sur un terminal.
+
 ### Mots de passe
 
 Pour une connexion en `auth = "password"`, sshpass-gui **ne lit jamais le secret**.
@@ -176,6 +272,42 @@ Il ecrit un script `SSH_ASKPASS` (mode 0700) qui ne contient que l'URI
 ne passe donc ni par la memoire de sshpass-gui, ni par le PTY, ni par les journaux.
 
 Necessite OpenSSH 8.4 ou plus recent (pour `SSH_ASKPASS_REQUIRE=force`).
+
+### Enregistrer un secret dans le coffre
+
+La fiche de connexion ecrit aussi **vers** Proton Pass : plus besoin de creer
+l'item a la main avant de pouvoir s'en servir.
+
+**Mot de passe.** Choisissez « Mot de passe (Proton Pass) », un coffre, puis
+saisissez le mot de passe du serveur et cliquez sur **Enregistrer dans Proton
+Pass**. L'item est cree avec le titre de la connexion, l'utilisateur SSH et
+l'URL `ssh://user@hote:port`, et la fiche s'y rattache toute seule. Si un item
+du meme titre existe deja, le bouton devient **Mettre a jour** et remplace le
+mot de passe au lieu d'en creer un second.
+
+**Cle SSH.** Avec « Agent SSH » ou « Fichier de cle », le meme bloc propose de
+**generer** une paire (Ed25519, RSA 2048 ou RSA 4096) directement dans le
+coffre, ou d'**importer** le fichier de cle indique. La connexion bascule alors
+en `auth = "agent"` : la cle est servie par l'agent du coffre, plus par un
+fichier local. Reste a deposer la cle publique sur le serveur — elle se lit
+depuis l'application Proton Pass, ou avec `ssh-add -L` sur la socket de l'agent
+que le panneau lateral affiche.
+
+Ou passe le secret, exactement :
+
+| Operation | Commande `pass-cli` | Transmission |
+| --- | --- | --- |
+| Creation d'un identifiant | `item create login --from-template -` | entree standard |
+| Mise a jour d'un mot de passe | `item update --field password=…` | ligne de commande |
+| Import d'une cle | `item create ssh-key import --from-private-key` | un chemin |
+| Generation d'une cle | `item create ssh-key generate` | rien ne sort du coffre |
+
+La creation passe par l'entree standard, donc le mot de passe n'apparait pas
+dans `/proc/<pid>/cmdline`. La **mise a jour** est la seule exception :
+`pass-cli item update` n'accepte les valeurs que sur sa ligne de commande.
+L'interface l'indique sous le bouton. Rien n'est jamais ecrit sur le disque, et
+le champ de saisie est efface des le clic — voir
+[ADR 0007](docs/adr/0007-ecriture-dans-proton-pass.md).
 
 ### Raccourcis
 
@@ -205,6 +337,7 @@ version = 1
 [proton_pass]
 binary = "pass-cli"
 agent_mode = "own-agent"
+auto_login = true
 
 [[connections]]
 id = "8a12…"
@@ -241,12 +374,14 @@ xvfb-run -a --server-args="-screen 0 1280x800x24" ./target/debug/sshpass-gui
 ### Organisation
 
 ```
+packaging/         .desktop, icone, metadonnees AppStream des logitheques
 src/
 ├── main.rs        point d'entree, chargement de la configuration
 ├── app.rs         etat global, boucle eframe, file d'actions
 ├── theme.rs       palette sombre et polices systeme
 ├── config/        modele de donnees et persistance TOML
-├── pass/          pass-cli (cli.rs), agents SSH (agent.rs), pont askpass
+├── pass/          pass-cli (cli.rs), agents SSH (agent.rs), secrets (secret.rs),
+│                  reconnexion (login.rs), pont askpass
 ├── term/          session PTY, encodage clavier, couleurs, rendu egui
 └── ui/            panneaux, fenetres, animations, autocompletion, pixel art
 ```
@@ -255,7 +390,9 @@ src/
 
 `.github/workflows/build.yml`, trois jobs :
 
-* **checks** — `cargo fmt --check`, `clippy -D warnings`, `cargo test`.
+* **checks** — `cargo fmt --check`, `clippy -D warnings`, `cargo test`, plus la
+  validation des metadonnees de logitheque (`desktop-file-validate`,
+  `appstreamcli validate --pedantic`, et la coherence de version).
 * **linux** — build release, puis `.deb`, `.rpm` et AppImage.
 
 Les binaires ne sont pas seulement compiles : `.github/scripts/smoke-test.sh`
@@ -274,7 +411,19 @@ detecte. Le binaire nu et l'AppImage passent chacun ce test.
 * Le schema JSON exact de `pass-cli` n'etant pas publie, les analyseurs sont
   tolerants et testes sur plusieurs conventions de nommage
   ([ADR 0002](docs/adr/0002-integration-pass-cli.md)) ; a confronter a une
-  sortie reelle.
+  sortie reelle. Les commandes d'ecriture, elles, sont documentees et leurs
+  arguments verifies par des tests qui pilotent un faux `pass-cli`.
+* Mettre a jour un mot de passe expose brievement sa valeur dans
+  `/proc/<pid>/cmdline` : `pass-cli item update` n'offre aucune alternative a
+  `--field`. La creation, elle, passe par l'entree standard
+  ([ADR 0007](docs/adr/0007-ecriture-dans-proton-pass.md)).
+* La cle publique d'une cle generee n'est pas affichee dans l'application : la
+  lire supposerait de recuperer aussi la partie privee. Elle se recupere depuis
+  Proton Pass ou via `ssh-add -L`.
+* La detection d'une session fermee repose sur les tournures anglaises de
+  `pass-cli`, faute de code de sortie dedie. Un `info` en echec est de toute
+  facon traite comme une session fermee, ce qui garde le comportement correct
+  ([ADR 0008](docs/adr/0008-session-proton-pass.md)).
 * **Systemes Unix uniquement.** Le PTY, les sockets d'agent et le pont
   `SSH_ASKPASS` reposent sur des mecanismes POSIX; compiler pour Windows
   s'arrete sur un `compile_error!` explicite. Cible eprouvee : Linux

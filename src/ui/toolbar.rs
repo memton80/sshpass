@@ -68,22 +68,34 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
         });
 }
 
-/// Pastille d'etat de `pass-cli`, cliquable pour relancer la detection.
+/// Pastille d'etat de Proton Pass, cliquable pour relancer la detection.
+///
+/// La couleur distingue le binaire de la session: une session fermee n'est pas
+/// une panne, seulement une reconnexion a faire — d'ou l'orange plutot que le
+/// rouge, reserve a ce qui demande une intervention.
 fn status_chip(app: &mut SshpassApp, ui: &mut egui::Ui) {
     let palette = app.palette;
     let scale = app.config.ui.pixel_scale as f32;
-    let (color, label, tooltip) = match &app.pass_status {
-        PassStatus::Probing => (
-            palette.warning,
-            "Proton Pass",
-            "Detection en cours".to_string(),
-        ),
-        PassStatus::Available(version) => (
-            palette.success,
-            "Proton Pass",
-            format!("Detecte: {version}"),
-        ),
-        PassStatus::Missing(err) => (palette.danger, "Proton Pass", err.clone()),
+    let reconnecting = app.login.is_running();
+    let (color, label) = match &app.pass_status {
+        PassStatus::Probing => (palette.warning, "Proton Pass"),
+        PassStatus::Ready { .. } => (palette.success, "Proton Pass"),
+        PassStatus::LoggedOut { .. } => (palette.warning, "Session fermee"),
+        PassStatus::Locked { .. } => (palette.danger, "Session verrouillee"),
+        PassStatus::Missing(_) => (palette.danger, "Proton Pass"),
+    };
+    let (color, label) = if reconnecting {
+        (palette.warning, "Reconnexion...")
+    } else {
+        (color, label)
+    };
+    let tooltip = if reconnecting {
+        match app.login.state().url() {
+            Some(url) => format!("Terminez la connexion dans le navigateur:\n{url}"),
+            None => "Ouverture du lien de connexion Proton Pass...".to_string(),
+        }
+    } else {
+        app.pass_status.summary()
     };
 
     let response = ui
@@ -94,10 +106,10 @@ fn status_chip(app: &mut SshpassApp, ui: &mut egui::Ui) {
         .response;
 
     let response = response.on_hover_text(&tooltip);
-    if response.interact(egui::Sense::click()).clicked() {
+    if response.interact(egui::Sense::click()).clicked() && !reconnecting {
         app.actions.push(Action::RefreshVaults);
         app.actions.push(Action::Toast(
-            "Detection de pass-cli...".into(),
+            "Verification de la session Proton Pass...".into(),
             ToastKind::Info,
         ));
     }

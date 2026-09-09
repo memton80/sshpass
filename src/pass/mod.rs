@@ -2,12 +2,18 @@
 
 pub mod agent;
 pub mod cli;
+pub mod login;
+pub mod secret;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 pub use agent::{AgentManager, AgentState};
-pub use cli::{Item, PassCli, Vault};
+pub use cli::{
+    Item, LoginDraft, PassCli, PassFailure, Probe, Session, SshKeySource, SshKeyType, Vault,
+};
+pub use login::{LoginManager, LoginOutcome};
+pub use secret::Secret;
 
 use crate::config::runtime_dir;
 
@@ -19,15 +25,53 @@ pub enum PassRequest {
     Vaults(PassCli),
     Items(PassCli, String),
     LoadAgent(PassCli, String),
+    /// Ecrit le mot de passe d'une connexion dans un coffre.
+    ///
+    /// Le secret voyage dans le `LoginDraft`, qui n'est ni clonable ni
+    /// affichable: il n'existe qu'ici, et il est detruit avec la requete.
+    SaveLogin {
+        cli: PassCli,
+        vault: String,
+        draft: LoginDraft,
+        /// Connexion a rattacher a l'item une fois celui-ci ecrit.
+        connection: String,
+        /// Un item de ce titre existe deja: mettre a jour plutot que creer.
+        /// Sans cela Proton Pass accepterait un doublon, et l'URI
+        /// `pass://coffre/titre` deviendrait ambigue.
+        replace: bool,
+    },
+    /// Range une cle SSH dans un coffre, importee ou generee.
+    SaveSshKey {
+        cli: PassCli,
+        vault: String,
+        title: String,
+        source: SshKeySource,
+        connection: String,
+    },
 }
 
 /// Reponse du thread Proton Pass. Les erreurs sont deja mises en forme: le
 /// thread d'interface n'a plus qu'a les afficher.
+///
+/// Aucune variante ne rapporte de secret: seulement de quoi rattacher la
+/// connexion a l'item et de quoi afficher un message.
 pub enum PassResponse {
-    Probe(Result<String, String>),
-    Vaults(Result<Vec<Vault>, String>),
-    Items(String, Result<Vec<Item>, String>),
-    LoadAgent(String, Result<String, String>),
+    Probe(Result<Probe, PassFailure>),
+    Vaults(Result<Vec<Vault>, PassFailure>),
+    Items(String, Result<Vec<Item>, PassFailure>),
+    LoadAgent(String, Result<String, PassFailure>),
+    SavedLogin {
+        connection: String,
+        vault: String,
+        item: String,
+        result: Result<String, PassFailure>,
+    },
+    SavedSshKey {
+        connection: String,
+        vault: String,
+        item: String,
+        result: Result<String, PassFailure>,
+    },
 }
 
 /// Executeur des appels `pass-cli`, qui sont bloquants (deverrouillage de
@@ -49,19 +93,66 @@ impl PassWorker {
                 for request in req_rx {
                     let response = match request {
                         PassRequest::Probe(cli) => {
-                            PassResponse::Probe(cli.version().map_err(|e| e.to_string()))
+                            PassResponse::Probe(cli.probe().map_err(PassFailure::from))
                         }
                         PassRequest::Vaults(cli) => {
-                            PassResponse::Vaults(cli.vaults().map_err(|e| e.to_string()))
+                            PassResponse::Vaults(cli.vaults().map_err(PassFailure::from))
                         }
                         PassRequest::Items(cli, vault) => {
-                            let items = cli.items(&vault).map_err(|e| e.to_string());
+                            let items = cli.items(&vault).map_err(PassFailure::from);
                             PassResponse::Items(vault, items)
                         }
                         PassRequest::LoadAgent(cli, vault) => {
                             let result = AgentManager::load_into_existing(&cli, &vault)
-                                .map_err(|e| e.to_string());
+                                .map_err(PassFailure::from);
                             PassResponse::LoadAgent(vault, result)
+                        }
+                        PassRequest::SaveLogin {
+                            cli,
+                            vault,
+                            draft,
+                            connection,
+                            replace,
+                        } => {
+                            let item = draft.title.clone();
+                            let result = if replace {
+                                cli.set_login_password(&vault, &item, &draft.password)
+                            } else {
+                                cli.create_login(&vault, &draft)
+                            }
+                            .map_err(PassFailure::from);
+                            // `draft` meurt ici: le mot de passe est efface
+                            // avant meme que la reponse ne parte.
+                            drop(draft);
+                            PassResponse::SavedLogin {
+                                connection,
+                                vault,
+                                item,
+                                result,
+                            }
+                        }
+                        PassRequest::SaveSshKey {
+                            cli,
+                            vault,
+                            title,
+                            source,
+                            connection,
+                        } => {
+                            let result = match &source {
+                                SshKeySource::Import(path) => {
+                                    cli.import_ssh_key(&vault, &title, path)
+                                }
+                                SshKeySource::Generate { key_type, comment } => {
+                                    cli.generate_ssh_key(&vault, &title, *key_type, comment)
+                                }
+                            }
+                            .map_err(PassFailure::from);
+                            PassResponse::SavedSshKey {
+                                connection,
+                                vault,
+                                item: title,
+                                result,
+                            }
                         }
                     };
                     if res_tx.send(response).is_err() {

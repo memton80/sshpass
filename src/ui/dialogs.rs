@@ -170,6 +170,20 @@ fn settings(app: &mut SshpassApp, ctx: &egui::Context) {
                         )
                         .changed();
                     ui.end_row();
+
+                    ui.label("Reconnexion");
+                    changed |= ui
+                        .checkbox(
+                            &mut app.config.proton_pass.auto_login,
+                            "Rouvrir la session automatiquement",
+                        )
+                        .on_hover_text(
+                            "Une session Proton Pass ne survit pas a l'arret de la machine. \
+                             Quand elle est fermee, sshpass-gui lance `pass-cli login` et \
+                             ouvre le lien d'authentification dans le navigateur.",
+                        )
+                        .changed();
+                    ui.end_row();
                 });
 
             ui::separator(ui, &palette);
