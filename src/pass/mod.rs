@@ -61,7 +61,7 @@ pub use cli::{
 pub use login::{LoginManager, LoginOutcome};
 pub use secret::Secret;
 
-use crate::config::runtime_dir;
+use crate::config::secure_runtime_dir;
 
 /// Requete adressee au thread Proton Pass. Le client est transporte avec la
 /// requete: le thread reste sans etat et suit donc immediatement un changement
@@ -85,6 +85,9 @@ pub enum PassRequest {
         /// Sans cela Proton Pass accepterait un doublon, et l'URI
         /// `pass://coffre/titre` deviendrait ambigue.
         replace: bool,
+        /// Autorise le repli `--field password=…` si `pass-cli` ne sait pas
+        /// lire un gabarit sur son entree standard (cf. `set_login_password`).
+        allow_argv_fallback: bool,
     },
     /// Range une cle SSH dans un coffre, importee ou generee.
     SaveSshKey {
@@ -159,10 +162,16 @@ impl PassWorker {
                             draft,
                             connection,
                             replace,
+                            allow_argv_fallback,
                         } => {
                             let item = draft.title.clone();
                             let result = if replace {
-                                cli.set_login_password(&vault, &item, &draft.password)
+                                cli.set_login_password(
+                                    &vault,
+                                    &item,
+                                    &draft.password,
+                                    allow_argv_fallback,
+                                )
                             } else {
                                 cli.create_login(&vault, &draft)
                             }
@@ -249,24 +258,92 @@ impl PassWorker {
 /// Le secret ne transite ainsi ni par la memoire de sshpass-gui ni par le PTY:
 /// `ssh` execute lui-meme le script et lit sa sortie. Le fichier ne contient
 /// que l'URI `pass://`, jamais la valeur.
-pub fn write_askpass_script(binary: &str, uri: &str, id: &str) -> std::io::Result<PathBuf> {
-    let dir = runtime_dir();
-    std::fs::create_dir_all(&dir)?;
+///
+/// `id` identifie **une session terminal**, pas une connexion: deux onglets
+/// ouverts sur la meme connexion doivent avoir chacun leur script. Sinon le
+/// second reecrit le fichier du premier, et une demande de mot de passe
+/// tardive du premier onglet servirait la reference du second — c'est-a-dire,
+/// selon les cas, le secret d'une autre machine.
+///
+/// `allow_temp_fallback` est relaye a `secure_runtime_dir`: sans
+/// `XDG_RUNTIME_DIR`, ecrire un askpass dans `/tmp` expose le script — et donc
+/// la reference — a tous les comptes de la machine.
+pub fn write_askpass_script(
+    binary: &str,
+    uri: &str,
+    id: &str,
+    allow_temp_fallback: bool,
+) -> std::io::Result<PathBuf> {
+    let dir = secure_runtime_dir(allow_temp_fallback)?;
     let path = dir.join(format!("askpass-{id}.sh"));
     let script = format!(
-        "#!/bin/sh\n# Genere par sshpass-gui. Ne contient aucun secret, seulement une reference.\nexec {} item view {}\n",
+        "{}exec {} item view {}\n",
+        ASKPASS_PREAMBLE,
         shell_quote(binary),
-        shell_quote(uri),
+        shell_quote(uri)
     );
-    std::fs::write(&path, script)?;
-    set_executable(&path)?;
+    write_private_executable(&path, script.as_bytes())?;
     Ok(path)
 }
 
-fn set_executable(path: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    // 0o700: le script est lisible et executable par le seul proprietaire.
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+/// En-tete du script askpass: le garde-fou qui decide si l'on repond.
+///
+/// `ssh` passe le texte de l'invite en premier argument. Deux invites peuvent
+/// arriver ici, et une seule merite le secret du coffre:
+///
+/// * `alex@hote's password:` — l'invite du mot de passe, redigee par `ssh`
+///   lui-meme. C'est celle qu'on sert.
+/// * tout le reste — la confirmation d'empreinte d'hote
+///   (`Are you sure you want to continue connecting`), et surtout les
+///   questions de `keyboard-interactive`, **redigees par le serveur**. Un
+///   serveur hostile n'aurait qu'a demander `Password:` a sa facon, ou
+///   `Entrez le mot de passe de la base:`, pour que le pont lui serve le
+///   secret. On refuse, et on le dit sur la sortie d'erreur, que `ssh` recopie
+///   dans le terminal.
+///
+/// Le motif colle donc a la forme exacte que `ssh` fabrique — `%s@%s's
+/// password: ` — et non a un vague « contient le mot password ». C'est ce qui
+/// separe `alex@hote's password: ` de `Enter your database password:`.
+/// `ssh` ne traduit pas ses invites: le motif n'a pas a suivre la locale.
+///
+/// Ce garde-fou est une **seconde ligne**: la premiere est
+/// `PreferredAuthentications=password`, qui empeche `keyboard-interactive`
+/// d'etre negocie (cf. `term::command::build_ssh`). Un serveur ne peut donc
+/// pas, en pratique, choisir le texte qui arrive ici.
+const ASKPASS_PREAMBLE: &str = "\
+#!/bin/sh
+# Genere par sshpass-gui. Ne contient aucun secret, seulement une reference.
+# Le secret n'est servi qu'a l'invite de mot de passe redigee par ssh lui-meme
+# (`utilisateur@hote's password: `). Toute autre question — confirmation
+# d'empreinte, challenge keyboard-interactive ecrit par le serveur — est
+# refusee sans reponse.
+case \"$1\" in
+  *\"'s password: \"|*\"'s password:\") ;;
+  *)
+    printf '%s\\n' \"sshpass-gui: invite inattendue, aucun secret fourni: $1\" >&2
+    exit 1
+    ;;
+esac
+";
+
+/// Cree un fichier prive et executable, sans jamais suivre ce qui existe deja.
+///
+/// `create_new` demande `O_CREAT | O_EXCL`: si le chemin existe — fichier
+/// ordinaire ou lien symbolique pose par un voisin — l'ouverture echoue au
+/// lieu d'ecrire a travers. `mode(0o700)` fixe les droits **a la creation**:
+/// un `set_permissions` apres coup laisserait une fenetre ou le fichier est
+/// lisible par tout le monde.
+fn write_private_executable(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(path)?;
+    file.write_all(contents)?;
+    file.sync_all()
 }
 
 /// Entoure une valeur de guillemets simples pour un shell POSIX.
@@ -285,24 +362,114 @@ mod tests {
         assert_eq!(shell_quote("$(whoami)"), "'$(whoami)'");
     }
 
+    /// Isole `XDG_RUNTIME_DIR` le temps d'un test et rend le repertoire.
+    fn with_runtime_dir<R>(name: &str, body: impl FnOnce() -> R) -> R {
+        let _guard = crate::config::env_guard();
+        let dir = std::env::temp_dir().join(format!(
+            "sshpass-gui-test-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let previous = std::env::var_os("XDG_RUNTIME_DIR");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+        let outcome = body();
+        match previous {
+            Some(previous) => std::env::set_var("XDG_RUNTIME_DIR", previous),
+            None => std::env::remove_var("XDG_RUNTIME_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        outcome
+    }
+
     #[test]
     fn askpass_script_contains_uri_not_secret() {
-        let dir = std::env::temp_dir().join(format!("sshpass-gui-test-{}", std::process::id()));
-        std::env::set_var("XDG_RUNTIME_DIR", &dir);
-        let path = write_askpass_script("pass-cli", "pass://Vault/Item/password", "test")
-            .expect("ecriture");
-        let content = std::fs::read_to_string(&path).expect("lecture");
-        assert!(content.starts_with("#!/bin/sh"));
-        assert!(content.contains("'pass://Vault/Item/password'"));
-        assert!(content.contains("item view"));
-        {
+        with_runtime_dir("askpass", || {
+            let path =
+                write_askpass_script("pass-cli", "pass://Vault/Item/password", "test", false)
+                    .expect("ecriture");
+            let content = std::fs::read_to_string(&path).expect("lecture");
+            assert!(content.starts_with("#!/bin/sh"));
+            assert!(content.contains("'pass://Vault/Item/password'"));
+            assert!(content.contains("item view"));
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&path)
                 .expect("metadata")
                 .permissions()
                 .mode();
             assert_eq!(mode & 0o777, 0o700, "le script doit rester prive");
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn each_session_gets_its_own_askpass_script() {
+        with_runtime_dir("sessions", || {
+            let first = write_askpass_script("pass-cli", "pass://V/prod-1/password", "s1", false)
+                .expect("ecriture");
+            let second = write_askpass_script("pass-cli", "pass://V/prod-2/password", "s2", false)
+                .expect("ecriture");
+            assert_ne!(first, second, "deux sessions partagent le meme fichier");
+            // Le premier script n'a pas ete reecrit par le second.
+            assert!(std::fs::read_to_string(&first)
+                .expect("lecture")
+                .contains("prod-1"));
+            assert!(std::fs::read_to_string(&second)
+                .expect("lecture")
+                .contains("prod-2"));
+        });
+    }
+
+    #[test]
+    fn askpass_refuses_to_overwrite_an_existing_path() {
+        with_runtime_dir("exclusif", || {
+            write_askpass_script("pass-cli", "pass://V/I/password", "meme-id", false)
+                .expect("ecriture");
+            // Un fichier — ou un lien symbolique — deja en place n'est jamais
+            // traverse: l'ouverture echoue au lieu d'ecrire a travers.
+            let err = write_askpass_script("pass-cli", "pass://V/I/password", "meme-id", false)
+                .expect_err("l'ecriture doit echouer");
+            assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        });
+    }
+
+    /// Le garde-fou du script est du shell: on l'execute pour de vrai.
+    #[cfg(unix)]
+    #[test]
+    fn askpass_answers_the_password_prompt_only() {
+        with_runtime_dir("invites", || {
+            // `echo` remplace `pass-cli`: le script doit l'atteindre — ou non.
+            let path = write_askpass_script("echo", "pass://V/I/password", "garde", false)
+                .expect("ecriture");
+            let ask = |prompt: &str| {
+                testing::unhurried(|| {
+                    std::process::Command::new(&path)
+                        .arg(prompt)
+                        .output()
+                        .map_err(crate::pass::cli::PassError::Io)
+                })
+                .expect("execution")
+            };
+
+            // L'invite emise par ssh lui-meme: on repond.
+            let served = ask("alex@example.com's password: ");
+            assert!(served.status.success());
+            assert!(String::from_utf8_lossy(&served.stdout).contains("item view"));
+
+            // Une question de keyboard-interactive, redigee par le serveur.
+            for hostile in [
+                "Enter your database password:",
+                "OTP:",
+                "Verification code:",
+                "Are you sure you want to continue connecting (yes/no)?",
+            ] {
+                let refused = ask(hostile);
+                assert!(
+                    !refused.status.success(),
+                    "invite servie alors qu'elle vient du serveur: {hostile}"
+                );
+                assert!(String::from_utf8_lossy(&refused.stdout).trim().is_empty());
+                assert!(String::from_utf8_lossy(&refused.stderr).contains("invite inattendue"));
+            }
+        });
     }
 }

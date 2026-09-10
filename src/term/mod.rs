@@ -87,6 +87,50 @@ impl EventListener for EventProxy {
     }
 }
 
+/// Ce que la machine distante a le droit de faire du presse-papiers local.
+///
+/// OSC 52 est une sequence a **deux sens**: la meme sequence sert a poser une
+/// valeur dans le presse-papiers et, avec `?` en charge utile, a demander au
+/// terminal de la renvoyer. Le second sens est un canal d'exfiltration direct
+/// pour un gestionnaire SSH — le presse-papiers d'un administrateur contient
+/// des mots de passe, des jetons, des URL privees — et il s'active sans que
+/// personne ne colle quoi que ce soit. Les deux sens sont donc separes ici, et
+/// la lecture est fermee par defaut (cf. `config::SecurityConfig`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClipboardPolicy {
+    /// Repondre a une requete de lecture (`OSC 52 ; c ; ? ST`).
+    pub allow_remote_read: bool,
+    /// Accepter une ecriture venue du distant.
+    pub allow_remote_write: bool,
+    /// Taille maximale d'une ecriture, en octets.
+    pub max_write_bytes: usize,
+}
+
+impl Default for ClipboardPolicy {
+    fn default() -> Self {
+        Self {
+            allow_remote_read: false,
+            allow_remote_write: true,
+            max_write_bytes: 64 * 1024,
+        }
+    }
+}
+
+impl ClipboardPolicy {
+    pub fn from_config(security: &crate::config::SecurityConfig) -> Self {
+        Self {
+            allow_remote_read: security.remote_clipboard_read,
+            allow_remote_write: security.remote_clipboard_write,
+            max_write_bytes: security.clipboard_write_limit,
+        }
+    }
+
+    /// Verdict sur une ecriture venue du distant, en octets.
+    pub fn accepts_write(&self, len: usize) -> bool {
+        self.allow_remote_write && len <= self.max_write_bytes
+    }
+}
+
 /// Effets a traiter par l'interface apres consommation des evenements.
 #[derive(Debug, Default)]
 pub struct TerminalUpdate {
@@ -96,6 +140,12 @@ pub struct TerminalUpdate {
     pub title_changed: bool,
     /// Le terminal a sonne.
     pub bell: bool,
+    /// Une lecture du presse-papiers a ete refusee au distant, et l'utilisateur
+    /// ne l'a pas encore appris pour cette session.
+    ///
+    /// Signale une fois par session: c'est une information de securite, pas un
+    /// incident a repeter a chaque sequence.
+    pub blocked_clipboard_read: bool,
 }
 
 /// Une session terminal vivante.
@@ -109,6 +159,10 @@ pub struct TerminalSession {
     palette: TerminalPalette,
     /// Copie locale du presse-papiers, pour repondre aux requetes OSC 52.
     clipboard: String,
+    /// Ce que le distant a le droit de faire de ce presse-papiers.
+    clipboard_policy: ClipboardPolicy,
+    /// Un refus de lecture a-t-il deja ete signale a l'utilisateur?
+    warned_clipboard_read: bool,
     /// Fichiers temporaires a supprimer a la fermeture (scripts askpass).
     cleanup: Vec<PathBuf>,
     /// Le PTY a-t-il deja produit quelque chose?
@@ -135,6 +189,7 @@ impl TerminalSession {
         scrollback: usize,
         ctx: &egui::Context,
         cleanup: Vec<PathBuf>,
+        clipboard_policy: ClipboardPolicy,
     ) -> anyhow::Result<Self> {
         // Initialisation exhaustive volontaire: si `tty::Options` gagne un
         // champ, on veut une erreur de compilation plutot qu'une valeur par
@@ -184,6 +239,8 @@ impl TerminalSession {
             cell: (window_size.cell_width, window_size.cell_height),
             palette: TerminalPalette::default(),
             clipboard: String::new(),
+            clipboard_policy,
+            warned_clipboard_read: false,
             cleanup,
             saw_output: false,
             started_at: Instant::now(),
@@ -329,12 +386,35 @@ impl TerminalSession {
                     update.title_changed = true;
                 }
                 TermEvent::ClipboardStore(_, text) => {
-                    self.clipboard = text.clone();
-                    update.copy_to_clipboard = Some(text);
+                    if self.clipboard_policy.accepts_write(text.len()) {
+                        self.clipboard = text.clone();
+                        update.copy_to_clipboard = Some(text);
+                    } else {
+                        log::warn!(
+                            "ecriture OSC 52 de {} octets refusee (autorisee: {}, limite {})",
+                            text.len(),
+                            self.clipboard_policy.allow_remote_write,
+                            self.clipboard_policy.max_write_bytes
+                        );
+                    }
                 }
                 TermEvent::ClipboardLoad(_, format) => {
-                    let reply = format(&self.clipboard);
-                    self.write(reply.into_bytes());
+                    if self.clipboard_policy.allow_remote_read {
+                        let reply = format(&self.clipboard);
+                        self.write(reply.into_bytes());
+                    } else {
+                        // Aucune reponse, pas meme vide: le distant n'apprend
+                        // ni le contenu, ni sa taille, ni son existence.
+                        log::warn!(
+                            "requete OSC 52 de lecture du presse-papiers refusee \
+                             (session « {} »)",
+                            self.title
+                        );
+                        if !self.warned_clipboard_read {
+                            self.warned_clipboard_read = true;
+                            update.blocked_clipboard_read = true;
+                        }
+                    }
                 }
                 TermEvent::ColorRequest(index, format) => {
                     let reply = format(color32_to_rgb(self.color_at(index)));
@@ -409,6 +489,45 @@ mod tests {
         assert_eq!(size.columns, 1);
         assert_eq!(size.screen_lines, 1);
         assert_eq!(size.total_lines(), 1);
+    }
+
+    #[test]
+    fn remote_cannot_read_the_clipboard_by_default() {
+        let policy = ClipboardPolicy::default();
+        assert!(
+            !policy.allow_remote_read,
+            "OSC 52 « lecture » exfiltre le presse-papiers vers le serveur"
+        );
+        // L'ecriture reste utile (tmux, vim) et donc permise.
+        assert!(policy.accepts_write(128));
+    }
+
+    #[test]
+    fn clipboard_writes_are_bounded_and_switchable() {
+        let policy = ClipboardPolicy {
+            max_write_bytes: 16,
+            ..ClipboardPolicy::default()
+        };
+        assert!(policy.accepts_write(16));
+        assert!(!policy.accepts_write(17), "ecriture non bornee");
+
+        let closed = ClipboardPolicy {
+            allow_remote_write: false,
+            ..ClipboardPolicy::default()
+        };
+        assert!(!closed.accepts_write(1));
+    }
+
+    #[test]
+    fn policy_follows_the_configuration() {
+        let security = crate::config::SecurityConfig {
+            remote_clipboard_read: true,
+            clipboard_write_limit: 42,
+            ..Default::default()
+        };
+        let policy = ClipboardPolicy::from_config(&security);
+        assert!(policy.allow_remote_read);
+        assert_eq!(policy.max_write_bytes, 42);
     }
 
     #[test]

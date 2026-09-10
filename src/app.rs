@@ -265,6 +265,7 @@ impl SshpassApp {
             &config.proton_pass.binary,
             config.proton_pass.agent_mode,
             config.proton_pass.refresh_interval,
+            config.security.allow_temp_runtime_dir,
         );
         let mut pass = PassWorker::spawn();
         pass.send(PassRequest::Probe(PassCli::new(&config.proton_pass.binary)));
@@ -417,14 +418,20 @@ impl SshpassApp {
             context.agent_socket = self.agents.socket_for(&vault);
         }
 
-        if connection.auth == AuthMethod::Password {
+        if connection.auth.uses_stored_password() {
             match connection.proton.as_ref().filter(|p| p.is_complete()) {
                 Some(reference) => {
                     let uri = uri_with_default_field(reference);
+                    // L'identifiant est tire ici, et pas repris de la
+                    // connexion: deux onglets ouverts sur la meme machine
+                    // doivent avoir chacun leur script, sinon le second
+                    // ecrase la reference du premier (cf. `write_askpass_script`).
+                    let session_id = config::new_id();
                     match crate::pass::write_askpass_script(
                         &self.config.proton_pass.binary,
                         &uri,
-                        &connection.id,
+                        &session_id,
+                        self.config.security.allow_temp_runtime_dir,
                     ) {
                         Ok(path) => {
                             cleanup.push(path.clone());
@@ -476,6 +483,7 @@ impl SshpassApp {
             self.config.ui.scrollback_lines,
             ctx,
             cleanup,
+            crate::term::ClipboardPolicy::from_config(&self.config.security),
         ) {
             Ok(session) => TabState::Running(Box::new(session)),
             Err(err) => {
@@ -838,8 +846,9 @@ impl SshpassApp {
     }
 
     /// Consomme les evenements des sessions terminal.
-    fn poll_terminals(&mut self, ctx: &egui::Context) {
+    fn poll_terminals(&mut self, ctx: &egui::Context, now: f64) {
         let mut clipboard: Option<String> = None;
+        let mut blocked_reads: Vec<String> = Vec::new();
         for tab in &mut self.tabs {
             if let TabState::Running(session) = &mut tab.state {
                 let update = session.pump();
@@ -852,7 +861,19 @@ impl SshpassApp {
                 if update.bell {
                     tab.bell = true;
                 }
+                if update.blocked_clipboard_read {
+                    blocked_reads.push(tab.title.clone());
+                }
             }
+        }
+        // Une seule fois par session: la sequence peut etre reemise en boucle,
+        // et une notification par tentative noierait l'information.
+        for title in blocked_reads {
+            self.toast(
+                format!("« {title} » a demande a lire le presse-papiers: refuse"),
+                ToastKind::Error,
+                now,
+            );
         }
         if let Some(text) = clipboard {
             ctx.copy_text(text);
@@ -1014,6 +1035,7 @@ impl SshpassApp {
                         draft,
                         connection,
                         replace,
+                        allow_argv_fallback: self.config.security.allow_argv_fallback,
                     });
                 }
                 Action::SaveProtonSshKey {
@@ -1089,7 +1111,14 @@ fn uri_with_default_field(reference: &ProtonRef) -> String {
         .filter(|f| !f.is_empty())
     {
         Some(_) => reference.uri(),
-        None => format!("pass://{}/{}/password", reference.vault, reference.item),
+        // Passe par `ProtonRef::uri` pour beneficier du meme encodage des
+        // composants, plutot que de recomposer l'URI a la main ici.
+        None => ProtonRef {
+            vault: reference.vault.clone(),
+            item: reference.item.clone(),
+            field: Some("password".to_string()),
+        }
+        .uri(),
     }
 }
 
@@ -1102,7 +1131,7 @@ impl eframe::App for SshpassApp {
         self.poll_login(now);
         self.check_session(now);
         self.poll_pass(now);
-        self.poll_terminals(&ctx);
+        self.poll_terminals(&ctx, now);
         self.advance_waiting_tabs(&ctx, now);
         self.prune_toasts(now);
         self.handle_shortcuts(&ctx);

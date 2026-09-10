@@ -18,10 +18,16 @@
 //!   donc jamais visible dans `/proc/<pid>/cmdline`;
 //! * cle SSH — sshpass-gui ne voit jamais la cle: `import` recoit un
 //!   **chemin**, `generate` fait tout le travail cote `pass-cli`;
-//! * mise a jour d'un mot de passe existant — `pass-cli item update` n'accepte
-//!   les valeurs que par `--field cle=valeur`, donc sur la ligne de commande.
-//!   C'est la seule exception, elle est signalee dans l'interface et les
-//!   messages d'erreur sont expurges (`secret::redact`).
+//! * mise a jour d'un mot de passe existant — le gabarit part lui aussi par
+//!   **stdin** (`item update --from-template -`). Si la version installee ne
+//!   connait pas cette forme, le seul autre chemin documente est
+//!   `--field cle=valeur`, donc la ligne de commande, donc `/proc/<pid>/cmdline`
+//!   — lisible par **tous** les comptes de la machine. Ce repli est refuse
+//!   sauf autorisation explicite (`security.allow_argv_fallback`).
+//!
+//! Tout ce qui ressort de `pass-cli` — sortie standard resumee, sortie
+//! d'erreur — traverse `secret::sanitize_external_output` avant d'atteindre
+//! l'interface ou le journal.
 //!
 //! ## Session
 //!
@@ -38,7 +44,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::pass::secret::{redact, Secret};
+use crate::pass::secret::{redact, sanitize_external_output, Secret};
 
 /// Delai au-dela duquel un appel `pass-cli` est considere comme bloque
 /// (session verrouillee attendant une saisie, reseau coupe...).
@@ -300,7 +306,10 @@ fn summarize(output: &str, fallback: &str) -> String {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .map(|line| line.to_string())
+        // Cette ligne vient d'un programme externe et part droit dans une
+        // notification: elle passe par le filtre commun.
+        .map(sanitize_external_output)
+        .filter(|line| !line.is_empty())
         .unwrap_or_else(|| fallback.to_string())
 }
 
@@ -372,9 +381,36 @@ const CLOSED_SESSION_PHRASES: [&str; 10] = [
 /// verrouillage peut lui aussi parler d'autorisation.
 const LOCKED_SESSION_PHRASES: [&str; 3] = ["session is locked", "session locked", "unlock"];
 
+/// Tournures par lesquelles un analyseur d'arguments dit qu'il ne connait pas
+/// une option. Elles couvrent `clap`, `cobra`, `getopt` et les messages faits
+/// main: `pass-cli` peut changer de bibliotheque sans nous prevenir.
+const UNKNOWN_FLAG_PHRASES: [&str; 8] = [
+    "unknown flag",
+    "unknown option",
+    "unrecognized",
+    "unrecognised",
+    "unexpected argument",
+    "invalid option",
+    "no such option",
+    "illegal option",
+];
+
 fn mentions(haystack: &str, phrases: &[&str]) -> bool {
     let haystack = haystack.to_lowercase();
     phrases.iter().any(|phrase| haystack.contains(phrase))
+}
+
+/// Vrai si l'echec vient de ce que `pass-cli` ne connait pas l'option, et non
+/// de ce qu'il a essaye et rate.
+///
+/// La distinction decide si l'on a le droit de se replier sur la ligne de
+/// commande (cf. `set_login_password`): un coffre introuvable ne justifie pas
+/// d'exposer le mot de passe une seconde fois.
+fn mentions_unknown_flag(err: &PassError) -> bool {
+    match err {
+        PassError::Command { stderr, .. } => mentions(stderr, &UNKNOWN_FLAG_PHRASES),
+        _ => false,
+    }
 }
 
 /// Client `pass-cli`.
@@ -493,17 +529,71 @@ impl PassCli {
 
     /// Remplace le mot de passe d'un item existant.
     ///
-    /// `pass-cli item update --vault-name V --item-title T --field password=…`
+    /// Deux chemins, essayes dans cet ordre:
     ///
-    /// **Seul appel ou un secret passe par la ligne de commande**: `item
-    /// update` n'offre aucune forme `--from-template`. La valeur est donc
-    /// visible dans `/proc/<pid>/cmdline` pendant l'appel, pour les processus
-    /// du meme utilisateur. Les messages d'erreur, eux, sont expurges.
-    pub fn set_login_password(&self, vault: &str, item: &str, password: &Secret) -> Result<String> {
+    /// 1. `item update --from-template -`, ou le gabarit JSON part par
+    ///    **stdin**, comme a la creation. Rien du secret n'apparait alors dans
+    ///    `/proc/<pid>/cmdline`.
+    /// 2. `item update --field password=…`, ou le secret est un argument.
+    ///
+    /// Le second est un **repli**, et il n'est pris que si la version de
+    /// `pass-cli` installee ne connait pas `--from-template` sur `update`, et
+    /// seulement si `allow_argv_fallback` l'autorise. `/proc/<pid>/cmdline`
+    /// est lisible par tous les comptes de la machine, pas seulement par le
+    /// notre: exposer le mot de passe la doit rester un choix explicite. Sans
+    /// cette permission, l'echec est franc et son message dit quoi faire.
+    pub fn set_login_password(
+        &self,
+        vault: &str,
+        item: &str,
+        password: &Secret,
+        allow_argv_fallback: bool,
+    ) -> Result<String> {
         let item = require(item, "Le titre de l'item est obligatoire.")?;
         let vault = require(vault, "Choisissez un coffre Proton Pass.")?;
         if password.is_empty() {
             return Err(PassError::Invalid("Le mot de passe est vide.".into()));
+        }
+        let fallback = format!("mot de passe de « {item} » mis a jour");
+
+        let template = vec![
+            "item".to_string(),
+            "update".to_string(),
+            "--vault-name".to_string(),
+            vault.clone(),
+            "--item-title".to_string(),
+            item.clone(),
+            "--from-template".to_string(),
+            "-".to_string(),
+        ];
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "password": password.expose(),
+        }))
+        .unwrap_or_default();
+
+        match self.run_with_input(&template, Some(payload)) {
+            Ok(out) => return Ok(summarize(&out, &fallback)),
+            // La commande existe et a echoue pour une vraie raison (coffre
+            // inconnu, session fermee): le repli n'y changerait rien, et il
+            // exposerait le secret pour le meme echec.
+            Err(err) if !mentions_unknown_flag(&err) => return Err(err),
+            Err(err) => {
+                if !allow_argv_fallback {
+                    return Err(PassError::Invalid(format!(
+                        "Cette version de `pass-cli` ne sait pas mettre un item a jour \
+                         depuis son entree standard ({}). Le seul autre chemin place le \
+                         mot de passe dans la ligne de commande, lisible par tous les \
+                         comptes de la machine via /proc. Modifiez l'item depuis Proton \
+                         Pass, ou activez « Mot de passe en ligne de commande » dans les \
+                         reglages.",
+                        err.detail()
+                    )));
+                }
+                log::warn!(
+                    "`item update --from-template` indisponible, repli sur --field: {}",
+                    err.detail()
+                );
+            }
         }
 
         let args = vec![
@@ -512,15 +602,12 @@ impl PassCli {
             "--vault-name".to_string(),
             vault,
             "--item-title".to_string(),
-            item.clone(),
+            item,
             "--field".to_string(),
             format!("password={}", password.expose()),
         ];
         let out = self.run(&args)?;
-        Ok(summarize(
-            &out,
-            &format!("mot de passe de « {item} » mis a jour"),
-        ))
+        Ok(summarize(&out, &fallback))
     }
 
     /// Importe une cle privee existante dans un coffre.
@@ -700,7 +787,10 @@ impl PassCli {
                     .code()
                     .map(|c| c.to_string())
                     .unwrap_or_else(|| "signal".into()),
-                stderr: String::from_utf8_lossy(&stderr).trim().to_string(),
+                // La sortie d'erreur d'un programme externe finit dans une
+                // notification et dans le journal: elle est expurgee et bornee
+                // ici, une bonne fois, plutot qu'a chaque point d'affichage.
+                stderr: sanitize_external_output(String::from_utf8_lossy(&stderr).trim()),
             });
         }
         Ok(String::from_utf8_lossy(&stdout).into_owned())
@@ -1134,7 +1224,7 @@ mod tests {
             Err(PassError::Invalid(_))
         ));
         assert!(matches!(
-            cli.set_login_password("Coffre", "", &Secret::new("s")),
+            cli.set_login_password("Coffre", "", &Secret::new("s"), true),
             Err(PassError::Invalid(_))
         ));
         assert!(matches!(
@@ -1329,10 +1419,89 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn updating_a_password_uses_the_documented_field_syntax() {
+    fn updating_a_password_prefers_standard_input() {
         let (cli, dir) = stub_cli("update");
         crate::pass::testing::unhurried(|| {
-            cli.set_login_password("SSH Keys", "web-01", &Secret::new("hunter2"))
+            cli.set_login_password("SSH Keys", "web-01", &Secret::new("hunter2"), true)
+        })
+        .expect("mise a jour");
+
+        let args = std::fs::read_to_string(dir.join("args")).expect("args");
+        assert_eq!(
+            args.lines().collect::<Vec<_>>(),
+            [
+                "item",
+                "update",
+                "--vault-name",
+                "SSH Keys",
+                "--item-title",
+                "web-01",
+                "--from-template",
+                "-",
+            ]
+        );
+        // Le coeur du contrat: rien du secret dans `/proc/<pid>/cmdline`.
+        assert!(
+            !args.contains("hunter2"),
+            "mot de passe sur la ligne de commande: {args}"
+        );
+        let stdin = std::fs::read_to_string(dir.join("stdin")).expect("stdin");
+        let json: Value = serde_json::from_str(&stdin).expect("json");
+        assert_eq!(json["password"], "hunter2");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Faux `pass-cli` d'une version qui ignore `--from-template` sur `update`:
+    /// il refuse l'option comme le ferait un analyseur d'arguments, et
+    /// journalise ce qu'on lui a passe.
+    #[cfg(unix)]
+    fn stub_cli_without_template(name: &str) -> (PassCli, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "sshpass-gui-legacy-{}-{name}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let script = dir.join("pass-cli");
+        crate::pass::testing::write_stub(
+            &script,
+            &format!(
+                "printf '%s\\n' \"$@\" > '{dir}/args'\n\
+                 for a in \"$@\"; do\n\
+                 \x20 if [ \"$a\" = '--from-template' ]; then\n\
+                 \x20   echo 'unknown flag: --from-template' >&2\n\
+                 \x20   exit 2\n\
+                 \x20 fi\n\
+                 done\n\
+                 echo 'Item updated'",
+                dir = dir.display()
+            ),
+        );
+        (PassCli::new(script.to_string_lossy().into_owned()), dir)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_old_cli_falls_back_only_when_it_is_allowed() {
+        let (cli, dir) = stub_cli_without_template("refus");
+
+        // Sans permission, l'echec est franc: le mot de passe ne part pas dans
+        // `/proc/<pid>/cmdline` a l'insu de l'utilisateur.
+        let refused = crate::pass::testing::unhurried(|| {
+            cli.set_login_password("SSH Keys", "web-01", &Secret::new("hunter2"), false)
+        })
+        .expect_err("le repli doit etre refuse");
+        assert!(matches!(refused, PassError::Invalid(_)));
+        let args = std::fs::read_to_string(dir.join("args")).expect("args");
+        assert!(
+            !args.contains("hunter2"),
+            "mot de passe passe malgre le refus: {args}"
+        );
+
+        // Avec permission, le repli documente reprend la main.
+        crate::pass::testing::unhurried(|| {
+            cli.set_login_password("SSH Keys", "web-01", &Secret::new("hunter2"), true)
         })
         .expect("mise a jour");
         let args = std::fs::read_to_string(dir.join("args")).expect("args");
@@ -1349,6 +1518,43 @@ mod tests {
                 "password=hunter2",
             ]
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_real_failure_is_never_retried_on_the_command_line() {
+        // Le coffre n'existe pas: le repli n'y changerait rien, et il
+        // exposerait le secret pour obtenir le meme echec.
+        let dir = std::env::temp_dir().join(format!(
+            "sshpass-gui-vaultless-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let script = dir.join("pass-cli");
+        crate::pass::testing::write_stub(
+            &script,
+            &format!(
+                "printf '%s\\n' \"$@\" > '{dir}/args'\n\
+                 echo 'vault not found' >&2\nexit 1",
+                dir = dir.display()
+            ),
+        );
+        let cli = PassCli::new(script.to_string_lossy().into_owned());
+
+        let err = crate::pass::testing::unhurried(|| {
+            cli.set_login_password("Absent", "web-01", &Secret::new("hunter2"), true)
+        })
+        .expect_err("doit echouer");
+        assert!(err.detail().contains("vault not found"));
+        let args = std::fs::read_to_string(dir.join("args")).expect("args");
+        assert!(
+            !args.contains("hunter2"),
+            "secret rejoue sur la ligne de commande: {args}"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
