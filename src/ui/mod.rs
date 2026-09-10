@@ -5,6 +5,7 @@ pub mod autocomplete;
 pub mod dialogs;
 pub mod editor;
 pub mod home;
+pub mod modal;
 pub mod pixel;
 pub mod sidebar;
 pub mod tabs;
@@ -53,25 +54,36 @@ pub fn pixel_button(
     let size = egui::vec2(text_width + 16.0 + sprite.size(scale).x, 24.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let t = anim::hover(ui, response.id.with("hover"), response.hovered());
+    // Enfoncement: le contenu descend d'un pixel tant que le bouton est tenu.
+    // C'est bref (0,06 s) parce qu'un relachement mou donnerait l'impression
+    // que le clic n'a pas ete pris.
+    let pressed = anim::toggle(
+        ui,
+        response.id.with("appui"),
+        response.is_pointer_button_down_on(),
+        0.06,
+    );
+    let sink = anim::lerp(0.0, 1.0, pressed);
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
+        let idle = anim::lerp_color(palette.surface, palette.surface_high, t);
         painter.rect_filled(
             rect,
             egui::CornerRadius::ZERO,
-            anim::lerp_color(palette.surface, palette.surface_high, t),
+            anim::lerp_color(idle, palette.accent_dim, pressed),
         );
-        let color = anim::lerp_color(palette.text_dim, palette.accent_soft, t);
+        let color = anim::lerp_color(palette.text_dim, palette.accent_soft, t.max(pressed));
         pixel::frame(
             painter,
             rect,
-            anim::lerp_color(palette.border, palette.accent, t),
+            anim::lerp_color(palette.border, palette.accent, t.max(pressed)),
             1.0,
         );
         pixel::draw(
             painter,
             egui::pos2(
                 rect.left() + 6.0,
-                rect.center().y - sprite.size(scale).y / 2.0,
+                rect.center().y - sprite.size(scale).y / 2.0 + sink,
             ),
             sprite,
             scale,
@@ -79,7 +91,10 @@ pub fn pixel_button(
             color,
         );
         painter.text(
-            egui::pos2(rect.left() + 10.0 + sprite.size(scale).x, rect.center().y),
+            egui::pos2(
+                rect.left() + 10.0 + sprite.size(scale).x,
+                rect.center().y + sink,
+            ),
             egui::Align2::LEFT_CENTER,
             label,
             egui::FontId::proportional(12.0),

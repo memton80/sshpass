@@ -3,7 +3,7 @@
 use egui::{Align, Frame, Layout, Margin, RichText};
 
 use crate::app::{Action, PassStatus, SshpassApp, ToastKind};
-use crate::ui::pixel;
+use crate::ui::{anim, pixel};
 
 pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
     let palette = app.palette;
@@ -98,9 +98,19 @@ fn status_chip(app: &mut SshpassApp, ui: &mut egui::Ui) {
         app.pass_status.summary()
     };
 
+    // Une detection ou une reconnexion en cours se voit: chenillard pendant
+    // que `pass-cli login` tourne, pastille qui bat pendant la detection.
+    let probing = matches!(app.pass_status, PassStatus::Probing);
     let response = ui
         .horizontal(|ui| {
-            pixel::status_dot(ui, color, scale, "");
+            if reconnecting {
+                pixel::loader(ui, scale, color);
+            } else if probing {
+                let beat = anim::lerp(0.3, 1.0, anim::breathe(ui.ctx(), anim::PULSE));
+                pixel::status_dot(ui, anim::fade(color, beat), scale, "");
+            } else {
+                pixel::status_dot(ui, color, scale, "");
+            }
             ui.label(RichText::new(label).color(palette.text_dim).size(12.0));
         })
         .response;

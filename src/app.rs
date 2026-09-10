@@ -13,7 +13,10 @@ use crate::theme::{self, Palette};
 use crate::ui;
 
 /// Delai au-dela duquel on cesse d'attendre l'agent Proton Pass.
-const AGENT_WAIT_TIMEOUT: f64 = 20.0;
+///
+/// Public: l'ecran d'attente d'un onglet en fait une jauge, pour que le delai
+/// affiche soit celui reellement applique.
+pub const AGENT_WAIT_TIMEOUT: f64 = 20.0;
 /// Duree d'affichage d'une notification.
 const TOAST_DURATION: f64 = 5.0;
 /// Intervalle entre deux verifications spontanees de la session Proton Pass.
@@ -31,9 +34,27 @@ pub enum ToastKind {
 }
 
 pub struct Toast {
+    /// Identifiant propre a la notification.
+    ///
+    /// Son animation d'entree doit suivre la notification, pas sa position
+    /// dans la pile: sans identifiant, refermer la premiere ferait rejouer
+    /// l'animation de toutes celles qui remontent d'un cran.
+    pub id: u64,
     pub message: String,
     pub kind: ToastKind,
     pub expires_at: f64,
+}
+
+impl Toast {
+    pub fn new(message: impl Into<String>, kind: ToastKind, expires_at: f64) -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            message: message.into(),
+            kind,
+            expires_at,
+        }
+    }
 }
 
 /// Disponibilite de `pass-cli`, binaire **et** session.
@@ -111,6 +132,20 @@ impl Tab {
         match &self.state {
             TabState::Running(session) => Some(session),
             _ => None,
+        }
+    }
+
+    /// Vrai tant que la connexion n'a rien donne a voir.
+    ///
+    /// Couvre les deux attentes que l'utilisateur subit sans rien pouvoir
+    /// faire: l'agent Proton Pass qui demarre, puis `ssh` qui negocie — ce
+    /// dernier reste muet jusqu'a la premiere sortie du distant. C'est ce que
+    /// signale l'animation de chargement de l'onglet.
+    pub fn is_connecting(&self) -> bool {
+        match &self.state {
+            TabState::WaitingAgent { .. } => true,
+            TabState::Running(session) => session.is_connecting(),
+            TabState::Failed(_) => false,
         }
     }
 }
@@ -269,21 +304,18 @@ impl SshpassApp {
     }
 
     pub fn toast(&mut self, message: impl Into<String>, kind: ToastKind, now: f64) {
-        self.toasts.push(Toast {
-            message: message.into(),
-            kind,
-            expires_at: now + TOAST_DURATION,
-        });
+        self.toasts
+            .push(Toast::new(message, kind, now + TOAST_DURATION));
     }
 
     pub fn save_config(&mut self) {
         if let Err(err) = config::save(&self.config) {
             log::error!("sauvegarde impossible: {err}");
-            self.toasts.push(Toast {
-                message: format!("Sauvegarde impossible: {err}"),
-                kind: ToastKind::Error,
-                expires_at: f64::MAX,
-            });
+            self.toasts.push(Toast::new(
+                format!("Sauvegarde impossible: {err}"),
+                ToastKind::Error,
+                f64::MAX,
+            ));
         }
     }
 

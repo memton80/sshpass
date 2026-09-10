@@ -6,6 +6,9 @@ use crate::app::{Action, SshpassApp};
 use crate::config::relative_time;
 use crate::ui::{self, anim, pixel};
 
+/// Duree totale de la cascade d'arrivee des lignes de l'accueil.
+const CASCADE: f32 = 0.5;
+
 pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
     let palette = app.palette;
     let scale = app.config.ui.pixel_scale as f32;
@@ -85,8 +88,8 @@ fn recents(app: &mut SshpassApp, ui: &mut egui::Ui) {
     }
 
     ui::section_title(ui, "Recentes", &palette);
-    for (id, name, target, when) in recents {
-        if entry(app, ui, &name, &target, &when) {
+    for (rank, (id, name, target, when)) in recents.into_iter().enumerate() {
+        if entry(app, ui, &name, &target, &when, rank) {
             app.actions.push(Action::OpenConnection(id));
         }
     }
@@ -108,15 +111,25 @@ fn results(app: &mut SshpassApp, ui: &mut egui::Ui, needle: &str) {
         ui::hint(ui, "Aucune connexion ne correspond.", &palette);
         return;
     }
-    for (id, name, target) in matches {
-        if entry(app, ui, &name, &target, "") {
+    for (rank, (id, name, target)) in matches.into_iter().enumerate() {
+        if entry(app, ui, &name, &target, "", rank) {
             app.actions.push(Action::OpenConnection(id));
         }
     }
 }
 
 /// Une ligne cliquable. Renvoie `true` si elle a ete activee.
-fn entry(app: &SshpassApp, ui: &mut egui::Ui, name: &str, target: &str, when: &str) -> bool {
+///
+/// `rank` est sa place dans la liste: les lignes n'apparaissent pas toutes en
+/// meme temps, elles se posent l'une apres l'autre.
+fn entry(
+    app: &SshpassApp,
+    ui: &mut egui::Ui,
+    name: &str,
+    target: &str,
+    when: &str,
+    rank: usize,
+) -> bool {
     let palette = app.palette;
     let scale = app.config.ui.pixel_scale as f32;
     let (rect, response) =
@@ -127,23 +140,34 @@ fn entry(app: &SshpassApp, ui: &mut egui::Ui, name: &str, target: &str, when: &s
     let t = anim::hover(ui, response.id.with("hover"), response.hovered());
     let shift = anim::lerp(0.0, 4.0, t);
 
+    // Cascade d'arrivee: l'accueil se remplit ligne a ligne. La progression est
+    // commune a toute la liste, seul le retard change d'une ligne a l'autre.
+    let listing = anim::appear(ui.ctx(), egui::Id::new("accueil_liste"), CASCADE);
+    let arrival = anim::ease_out(anim::stagger(listing, rank, 0.08));
+    let rise = anim::lerp(10.0, 0.0, arrival);
+
     if ui.is_rect_visible(rect) {
+        // L'opacite est appliquee couleur par couleur: `multiply_opacity`
+        // vaudrait pour tout ce qui suit dans la meme `Ui`, donc pour toutes
+        // les lignes suivantes, et se cumulerait a chacune.
+        let veil = |color: egui::Color32| anim::fade(color, arrival);
+        let rect = rect.translate(Vec2::new(0.0, rise));
         let painter = ui.painter();
         painter.rect_filled(
             rect,
             CornerRadius::ZERO,
-            anim::lerp_color(palette.surface, palette.surface_high, t),
+            veil(anim::lerp_color(palette.surface, palette.surface_high, t)),
         );
         if t > 0.0 {
-            pixel::frame(painter, rect, anim::fade(palette.accent, t), scale);
+            pixel::frame(painter, rect, veil(anim::fade(palette.accent, t)), scale);
         }
         pixel::draw(
             painter,
             egui::pos2(rect.left() + 10.0 + shift, rect.center().y - 4.0 * scale),
             &pixel::SERVER,
             scale,
-            anim::lerp_color(palette.accent_soft, palette.accent, t),
-            palette.accent,
+            veil(anim::lerp_color(palette.accent_soft, palette.accent, t)),
+            veil(palette.accent),
         );
         let text_x = rect.left() + 18.0 + 8.0 * scale + shift;
         painter.text(
@@ -151,14 +175,14 @@ fn entry(app: &SshpassApp, ui: &mut egui::Ui, name: &str, target: &str, when: &s
             Align2::LEFT_TOP,
             name,
             FontId::proportional(13.0),
-            palette.text,
+            veil(palette.text),
         );
         painter.text(
             egui::pos2(text_x, rect.center().y + 2.0),
             Align2::LEFT_TOP,
             target,
             FontId::proportional(11.0),
-            palette.text_dim,
+            veil(palette.text_dim),
         );
         if !when.is_empty() {
             painter.text(
@@ -166,7 +190,7 @@ fn entry(app: &SshpassApp, ui: &mut egui::Ui, name: &str, target: &str, when: &s
                 Align2::RIGHT_CENTER,
                 when,
                 FontId::proportional(11.0),
-                palette.text_dim,
+                veil(palette.text_dim),
             );
         }
     }

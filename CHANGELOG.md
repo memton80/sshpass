@@ -1,5 +1,26 @@
 # Journal des versions
 
+## 1.1.0 — 10 septembre 2026
+
+### L'interface montre ce qu'elle fait
+
+Les fenetres — fiche de connexion, reglages, confirmation — s'ouvrent et se
+referment en fondu au lieu d'apparaitre et de disparaitre d'un coup. Les
+dossiers de la barre laterale se deplient et se replient sur place, chevron
+compris.
+
+Surtout, **une connexion SSH qui s'etablit se voit**: le bandeau violet sous
+l'onglet devient une barre de chargement, sa pastille bat, et l'onglet retrouve
+son soulignement des que le serveur repond. Pendant qu'un agent Proton Pass
+demarre, l'onglet affiche une jauge indiquant le temps restant avant abandon.
+
+Le reste suit le meme principe: les notifications entrent et sortent par le
+bord droit, les connexions recentes de l'accueil se posent l'une apres l'autre,
+et les boutons s'enfoncent quand on les tient.
+
+Rien de tout cela ne tourne au repos: aucune animation perpetuelle ne demarre
+sans une attente reelle, et toutes s'arretent d'elles-memes.
+
 ## 1.0.0 — 9 septembre 2026
 
 Premiere version stable.

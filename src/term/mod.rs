@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event as TermEvent, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg, State};
@@ -28,6 +29,14 @@ use alacritty_terminal::tty;
 
 use crate::term::colors::{color32_to_rgb, TerminalPalette};
 use crate::term::command::CommandSpec;
+
+/// Delai au-dela duquel une session muette cesse d'etre annoncee « en cours
+/// de connexion ».
+///
+/// `ssh` bloque par un pare-feu peut se taire plusieurs minutes: passe ce
+/// delai, l'animation de l'onglet n'apprend plus rien a personne et ne ferait
+/// que reclamer une frame toutes les seize millisecondes.
+const CONNECTING_HINT: Duration = Duration::from_secs(45);
 
 /// Dimensions de la grille, exprimees en cellules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +111,14 @@ pub struct TerminalSession {
     clipboard: String,
     /// Fichiers temporaires a supprimer a la fermeture (scripts askpass).
     cleanup: Vec<PathBuf>,
+    /// Le PTY a-t-il deja produit quelque chose?
+    ///
+    /// `ssh` reste muet le temps de resoudre l'hote, d'ouvrir le canal et de
+    /// s'authentifier: tant qu'aucun octet n'est remonte, la connexion est
+    /// encore en train de s'etablir. C'est ce que l'onglet signale.
+    saw_output: bool,
+    /// Demarrage de la session, qui borne cette attente.
+    started_at: Instant,
     pub title: String,
     /// Renseigne quand le processus distant s'est termine.
     pub exit_status: Option<String>,
@@ -168,6 +185,8 @@ impl TerminalSession {
             palette: TerminalPalette::default(),
             clipboard: String::new(),
             cleanup,
+            saw_output: false,
+            started_at: Instant::now(),
             title: spec.program.clone(),
             exit_status: None,
         })
@@ -179,6 +198,14 @@ impl TerminalSession {
 
     pub fn palette(&self) -> &TerminalPalette {
         &self.palette
+    }
+
+    /// Vrai tant que la session n'a rien affiche, n'est pas morte, et que
+    /// l'attente reste plausible.
+    pub fn is_connecting(&self) -> bool {
+        !self.saw_output
+            && self.exit_status.is_none()
+            && self.started_at.elapsed() < CONNECTING_HINT
     }
 
     pub fn is_alive(&self) -> bool {
@@ -336,9 +363,10 @@ impl TerminalSession {
                         self.exit_status = Some("session fermee".to_string());
                     }
                 }
-                TermEvent::Wakeup
-                | TermEvent::MouseCursorDirty
-                | TermEvent::CursorBlinkingChange => {}
+                // `Wakeup` signale que la grille a change: c'est le premier
+                // signe de vie du distant.
+                TermEvent::Wakeup => self.saw_output = true,
+                TermEvent::MouseCursorDirty | TermEvent::CursorBlinkingChange => {}
             }
         }
         update
