@@ -1,6 +1,6 @@
 # Journal des versions
 
-## Non publie
+## 1.2.0 — 10 septembre 2026
 
 ### Ce que le serveur ne peut plus vous prendre
 

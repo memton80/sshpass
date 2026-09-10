@@ -130,6 +130,22 @@
   </requires>
 
   <releases>
+    <release version="1.2.0" date="2026-09-10">
+      <description>
+        <p>Le terminal se comporte comme un terminal, et le serveur ne peut plus rien vous prendre.</p>
+        <p xml:lang="en">The terminal behaves like a terminal, and the server can no longer take anything from you.</p>
+        <ul>
+          <li>Ctrl+C interrompt la commande en cours, Tab complete, les fleches rappellent l'historique</li>
+          <li xml:lang="en">Ctrl+C interrupts the running command, Tab completes, the arrow keys recall history</li>
+          <li>La souris est transmise aux programmes qui la demandent: htop, vim, tmux, less</li>
+          <li xml:lang="en">The mouse reaches the programs that ask for it: htop, vim, tmux, less</li>
+          <li>Un serveur ne peut plus demander le contenu de votre presse-papiers</li>
+          <li xml:lang="en">A server can no longer ask for the contents of your clipboard</li>
+          <li>Le mot de passe du coffre ne repond plus aux questions redigees par le serveur</li>
+          <li xml:lang="en">The vault password no longer answers questions written by the server</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.1.0" date="2026-09-10">
       <description>
         <p>L'interface montre ce qu'elle fait.</p>
