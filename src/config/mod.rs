@@ -7,6 +7,16 @@
 //! Regle absolue: **aucun secret n'est ecrit dans ce fichier**. Les mots de
 //! passe et les cles SSH restent dans Proton Pass; on ne stocke que des
 //! references (`ProtonRef`) vers les items du coffre.
+//!
+//! ## Le fichier de configuration est une politique d'execution
+//!
+//! Une connexion porte des options `ssh -o` libres (`ssh_options`) et une
+//! commande distante. Or `ssh` sait executer des programmes **locaux** pour
+//! le compte de sa configuration: `ProxyCommand`, `LocalCommand` couple a
+//! `PermitLocalCommand`, `KnownHostsCommand`, `Match exec`... Un TOML pose la
+//! par un tiers n'est donc pas « juste de la configuration »: c'est du code
+//! qui s'executera sous l'identite de l'utilisateur. Le fichier doit etre
+//! traite comme tel — cf. `SECURITY.md` et `command::dangerous_options`.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,6 +36,7 @@ pub struct Config {
     pub version: u32,
     pub ui: UiConfig,
     pub proton_pass: ProtonPassConfig,
+    pub security: SecurityConfig,
     #[serde(rename = "folders")]
     pub folders: Vec<Folder>,
     #[serde(rename = "connections")]
@@ -38,8 +49,66 @@ impl Default for Config {
             version: CONFIG_VERSION,
             ui: UiConfig::default(),
             proton_pass: ProtonPassConfig::default(),
+            security: SecurityConfig::default(),
             folders: Vec::new(),
             connections: Vec::new(),
+        }
+    }
+}
+
+/// Reglages de securite. Tous ont une valeur par defaut **fermee**: ce qui
+/// s'ouvre ici s'ouvre a la machine distante ou aux autres comptes locaux, et
+/// doit donc etre un choix, jamais un heritage.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SecurityConfig {
+    /// Repondre aux requetes OSC 52 « lecture du presse-papiers ».
+    ///
+    /// La sequence `OSC 52 ; c ; ? ST` demande au terminal de **renvoyer** le
+    /// presse-papiers dans le flux, donc a l'application distante. Pour un
+    /// gestionnaire SSH, ce presse-papiers contient regulierement un mot de
+    /// passe ou un jeton: un serveur compromis n'aurait qu'a emettre la
+    /// sequence pour le recuperer, sans que personne ne colle quoi que ce
+    /// soit. C'est refuse par defaut.
+    pub remote_clipboard_read: bool,
+    /// Laisser une application distante **ecrire** dans le presse-papiers
+    /// local (OSC 52 avec une charge utile).
+    ///
+    /// Bien plus benin que la lecture, et reellement utile (`tmux`, `vim`,
+    /// `yank` a distance): autorise par defaut, mais borne par
+    /// `clipboard_write_limit` et desactivable.
+    pub remote_clipboard_write: bool,
+    /// Taille maximale d'une ecriture OSC 52, en octets.
+    ///
+    /// Sans borne, un distant hostile peut pousser plusieurs mega-octets dans
+    /// le presse-papiers du poste a chaque frappe.
+    pub clipboard_write_limit: usize,
+    /// Accepter de se replier sur `TMPDIR`/`/tmp` quand `XDG_RUNTIME_DIR` est
+    /// absent.
+    ///
+    /// `/tmp` est partage par tous les comptes de la machine: un voisin peut y
+    /// deposer un lien symbolique a l'emplacement que l'on s'apprete a creer.
+    /// Le repli reste possible, mais il se demande.
+    pub allow_temp_runtime_dir: bool,
+    /// Autoriser `pass-cli item update --field password=...`, ou le secret
+    /// figure dans `/proc/<pid>/cmdline`.
+    ///
+    /// `/proc/<pid>/cmdline` est lisible par **tous** les comptes de la
+    /// machine. Le repli est donc refuse par defaut: si la version de
+    /// `pass-cli` installee ne sait pas lire un gabarit sur son entree
+    /// standard, la mise a jour echoue avec un message qui l'explique plutot
+    /// que d'exposer le mot de passe en silence.
+    pub allow_argv_fallback: bool,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            remote_clipboard_read: false,
+            remote_clipboard_write: true,
+            clipboard_write_limit: 64 * 1024,
+            allow_temp_runtime_dir: false,
+            allow_argv_fallback: false,
         }
     }
 }
@@ -154,20 +223,42 @@ pub enum AuthMethod {
     #[default]
     Agent,
     /// Mot de passe recupere dans Proton Pass et fourni a `ssh` via SSH_ASKPASS.
+    ///
+    /// **Uniquement** la methode `password` du protocole. `keyboard-interactive`
+    /// en est exclu a dessein: c'est le serveur qui y redige les questions, et
+    /// un serveur hostile n'aurait qu'a en poser une pour que le pont askpass
+    /// lui serve le secret du coffre. Cf. `AuthMethod::KeyboardInteractive`.
     Password,
+    /// Echange `keyboard-interactive` (PAM, code a usage unique, second
+    /// facteur), **saisi a la main**.
+    ///
+    /// Aucun secret automatique n'est branche sur ce mode: les questions
+    /// viennent du serveur, donc seul un humain peut decider quoi y repondre.
+    KeyboardInteractive,
     /// Fichier de cle privee sur disque (`ssh -i`).
     KeyFile,
 }
 
 impl AuthMethod {
-    pub const ALL: [AuthMethod; 3] = [AuthMethod::Agent, AuthMethod::Password, AuthMethod::KeyFile];
+    pub const ALL: [AuthMethod; 4] = [
+        AuthMethod::Agent,
+        AuthMethod::Password,
+        AuthMethod::KeyboardInteractive,
+        AuthMethod::KeyFile,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             AuthMethod::Agent => "Agent SSH",
             AuthMethod::Password => "Mot de passe (Proton Pass)",
+            AuthMethod::KeyboardInteractive => "Interactif (saisie manuelle)",
             AuthMethod::KeyFile => "Fichier de cle",
         }
+    }
+
+    /// Vrai si la methode va chercher un secret dans Proton Pass toute seule.
+    pub fn uses_stored_password(self) -> bool {
+        matches!(self, AuthMethod::Password)
     }
 }
 
@@ -186,12 +277,19 @@ pub struct ProtonRef {
 
 impl ProtonRef {
     /// URI comprise par `pass-cli item view`.
+    ///
+    /// Chaque composant est encode: un coffre nomme `Prod/Backup` produisait
+    /// jusqu'ici `pass://Prod/Backup/item`, ou l'item et le coffre ne se
+    /// distinguent plus. Cf. `encode_uri_component` pour le detail de ce qui
+    /// est encode — et de ce qui ne l'est volontairement pas.
     pub fn uri(&self) -> String {
+        let vault = encode_uri_component(&self.vault);
+        let item = encode_uri_component(&self.item);
         match &self.field {
             Some(field) if !field.is_empty() => {
-                format!("pass://{}/{}/{}", self.vault, self.item, field)
+                format!("pass://{vault}/{item}/{}", encode_uri_component(field))
             }
-            _ => format!("pass://{}/{}", self.vault, self.item),
+            _ => format!("pass://{vault}/{item}"),
         }
     }
 
@@ -400,12 +498,153 @@ fn adopt_config_from(legacy: &Path, target: &Path) -> anyhow::Result<Option<Path
     Ok(Some(legacy.to_path_buf()))
 }
 
+/// Encode un composant d'URI `pass://`.
+///
+/// Encodage **minimal et deliberement conservateur**: seuls les caracteres qui
+/// rendent l'URI ambigue sont echappes.
+///
+/// * `%` d'abord, sans quoi l'encodage ne serait pas reversible;
+/// * `/`, `?` et `#`, les delimiteurs qui decoupent l'URI;
+/// * les caracteres de controle, qui n'ont rien a faire dans un nom.
+///
+/// Les espaces et les lettres accentuees passent **tels quels**: un coffre
+/// s'appelle couramment « SSH Keys », et transformer cela en `SSH%20Keys`
+/// casserait toutes les configurations existantes si `pass-cli` ne decode pas.
+/// L'objectif est de lever l'ambiguite, pas de produire une URI RFC 3986.
+pub fn encode_uri_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '%' | '/' | '?' | '#' => {
+                let mut buf = [0u8; 4];
+                for byte in ch.encode_utf8(&mut buf).as_bytes() {
+                    encoded.push_str(&format!("%{byte:02X}"));
+                }
+            }
+            c if c.is_control() => {
+                let mut buf = [0u8; 4];
+                for byte in c.encode_utf8(&mut buf).as_bytes() {
+                    encoded.push_str(&format!("%{byte:02X}"));
+                }
+            }
+            c => encoded.push(c),
+        }
+    }
+    encoded
+}
+
 /// Repertoire volatil pour les sockets d'agent et les scripts askpass.
+///
+/// N'ecrit rien et ne verifie rien: c'est `secure_runtime_dir` qui cree le
+/// repertoire et refuse de travailler dans un repertoire douteux. Cette
+/// fonction ne sert qu'a **nommer** un chemin (socket d'agent, nettoyage).
 pub fn runtime_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("sshpass-gui")
+    runtime_base().join("sshpass-gui")
+}
+
+/// Racine du repertoire volatil: `XDG_RUNTIME_DIR` s'il existe, sinon le
+/// repertoire temporaire du systeme.
+fn runtime_base() -> PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => std::env::temp_dir(),
+    }
+}
+
+/// Vrai si `XDG_RUNTIME_DIR` designe une racine propre a l'utilisateur.
+pub fn has_private_runtime_dir() -> bool {
+    matches!(std::env::var_os("XDG_RUNTIME_DIR"), Some(dir) if !dir.is_empty())
+}
+
+/// Cree — ou revalide — le repertoire volatil, et garantit qu'il est prive.
+///
+/// Deux dangers, tous deux locaux:
+///
+/// * `XDG_RUNTIME_DIR` absent, on retombe sur `/tmp`, que **tout le monde**
+///   peut ecrire. Un voisin y depose `sshpass-gui` avant nous — un lien
+///   symbolique, un repertoire a lui — et lit ou remplace nos scripts askpass
+///   et nos sockets d'agent. Ce repli n'a donc lieu que s'il a ete demande
+///   (`security.allow_temp_runtime_dir`).
+/// * le repertoire existe deja mais n'est pas a nous, ou laisse un bit au
+///   groupe ou aux autres. On refuse plutot que de corriger en aveugle: si
+///   quelqu'un d'autre le possede, un `chmod` ne nous rendrait pas maitres des
+///   fichiers qui s'y trouvent deja.
+#[cfg(unix)]
+pub fn secure_runtime_dir(allow_temp_fallback: bool) -> std::io::Result<PathBuf> {
+    use std::io::{Error, ErrorKind};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+    if !has_private_runtime_dir() && !allow_temp_fallback {
+        return Err(Error::new(
+            ErrorKind::PermissionDenied,
+            "XDG_RUNTIME_DIR est absent. Le repli sur /tmp est partage par tous \
+             les comptes de la machine: activez « Repli /tmp » dans les \
+             reglages si vous l'acceptez malgre tout.",
+        ));
+    }
+
+    let dir = runtime_dir();
+    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => return Ok(dir),
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err),
+    }
+
+    // `symlink_metadata` et non `metadata`: c'est le lien qu'on veut voir, pas
+    // sa cible. Un lien vers /home/victime/.ssh passerait sinon le controle.
+    let meta = std::fs::symlink_metadata(&dir)?;
+    if !meta.is_dir() {
+        return Err(Error::new(
+            ErrorKind::PermissionDenied,
+            format!("{} n'est pas un repertoire", dir.display()),
+        ));
+    }
+    if meta.mode() & 0o077 != 0 {
+        return Err(Error::new(
+            ErrorKind::PermissionDenied,
+            format!(
+                "{} est accessible au groupe ou aux autres (mode {:o})",
+                dir.display(),
+                meta.mode() & 0o777
+            ),
+        ));
+    }
+    if let Some(uid) = current_uid() {
+        if meta.uid() != uid {
+            return Err(Error::new(
+                ErrorKind::PermissionDenied,
+                format!("{} appartient a un autre compte", dir.display()),
+            ));
+        }
+    }
+    Ok(dir)
+}
+
+/// Identifiant du compte qui execute ce processus.
+///
+/// Lu sur `/proc/self` plutot que par `getuid(2)`: la caisse n'a pas de
+/// dependance a `libc`, et ce projet ne vise que Linux. La ou `/proc` n'est
+/// pas monte, on renvoie `None` et l'appelant se contente du controle des
+/// droits — qui suffit deja a rendre le repertoire inutilisable par un tiers.
+#[cfg(unix)]
+fn current_uid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self").ok().map(|m| m.uid())
+}
+
+/// Verrou des tests qui touchent aux variables d'environnement.
+///
+/// `set_var` agit sur le processus entier et le binaire de test est
+/// multi-thread: sans ce verrou, un test qui retire `XDG_RUNTIME_DIR` le
+/// retire aussi sous les pieds de celui d'a cote, et l'echec se promene.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Prend le verrou d'environnement, meme s'il a ete empoisonne par un test qui
+/// a panique: c'est l'ordre qui nous interesse, pas l'etat protege.
+#[cfg(test)]
+pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner())
 }
 
 pub fn now_secs() -> u64 {
@@ -591,6 +830,129 @@ mod tests {
         assert_eq!(reference.uri(), "pass://Vault/Item");
         reference.field = Some("password".into());
         assert_eq!(reference.uri(), "pass://Vault/Item/password");
+    }
+
+    #[test]
+    fn proton_uri_keeps_components_apart() {
+        // Sans encodage, ces trois noms donnaient tous la meme URI.
+        let ambiguous = ProtonRef {
+            vault: "Prod/Backup".into(),
+            item: "web-01".into(),
+            field: None,
+        };
+        assert_eq!(ambiguous.uri(), "pass://Prod%2FBackup/web-01");
+
+        let with_query = ProtonRef {
+            vault: "V".into(),
+            item: "web?prod#1".into(),
+            field: Some("password".into()),
+        };
+        assert_eq!(with_query.uri(), "pass://V/web%3Fprod%231/password");
+    }
+
+    #[test]
+    fn uri_encoding_stays_minimal() {
+        // Ce qui marche aujourd'hui doit continuer a marcher a l'identique.
+        assert_eq!(encode_uri_component("SSH Keys"), "SSH Keys");
+        assert_eq!(encode_uri_component("cle-prod_01.v2"), "cle-prod_01.v2");
+        assert_eq!(encode_uri_component("Coffre prive"), "Coffre prive");
+        // Ce qui rend l'URI ambigue, en revanche, est echappe.
+        assert_eq!(encode_uri_component("a/b"), "a%2Fb");
+        assert_eq!(encode_uri_component("100%"), "100%25");
+        assert_eq!(encode_uri_component("a\nb"), "a%0Ab");
+        // L'encodage de `%` passe en premier: il reste reversible.
+        assert_eq!(encode_uri_component("%2F"), "%252F");
+    }
+
+    #[test]
+    fn auth_methods_declare_who_reads_the_vault() {
+        assert!(AuthMethod::Password.uses_stored_password());
+        // Les questions de `keyboard-interactive` viennent du serveur: aucun
+        // secret automatique ne doit y repondre.
+        assert!(!AuthMethod::KeyboardInteractive.uses_stored_password());
+        assert!(!AuthMethod::Agent.uses_stored_password());
+        assert!(!AuthMethod::KeyFile.uses_stored_password());
+        assert_eq!(AuthMethod::ALL.len(), 4);
+    }
+
+    #[test]
+    fn security_defaults_are_closed() {
+        let security = SecurityConfig::default();
+        assert!(
+            !security.remote_clipboard_read,
+            "un serveur distant ne doit pas pouvoir lire le presse-papiers"
+        );
+        assert!(!security.allow_temp_runtime_dir);
+        assert!(!security.allow_argv_fallback);
+        // L'ecriture reste utile et donc permise, mais bornee.
+        assert!(security.remote_clipboard_write);
+        assert!(security.clipboard_write_limit > 0);
+    }
+
+    #[test]
+    fn security_section_survives_a_roundtrip() {
+        let mut config = Config::default();
+        config.security.remote_clipboard_read = true;
+        config.security.clipboard_write_limit = 4096;
+        let text = toml::to_string_pretty(&config).expect("serialisation");
+        let parsed: Config = toml::from_str(&text).expect("deserialisation");
+        assert!(parsed.security.remote_clipboard_read);
+        assert_eq!(parsed.security.clipboard_write_limit, 4096);
+
+        // Une configuration ecrite par une version anterieure n'a pas la
+        // section: elle doit retomber sur les valeurs fermees.
+        let old: Config = toml::from_str("version = 1\n").expect("deserialisation");
+        assert!(!old.security.remote_clipboard_read);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_dir_refuses_the_shared_fallback() {
+        let _guard = env_guard();
+        let previous = std::env::var_os("XDG_RUNTIME_DIR");
+        std::env::remove_var("XDG_RUNTIME_DIR");
+        let refused = secure_runtime_dir(false);
+        if let Some(previous) = previous {
+            std::env::set_var("XDG_RUNTIME_DIR", previous);
+        }
+        let err = refused.expect_err("le repli /tmp doit etre refuse");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_dir_is_private_and_reusable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = env_guard();
+        let previous = std::env::var_os("XDG_RUNTIME_DIR");
+        let root = std::env::temp_dir().join(format!(
+            "sshpass-gui-runtime-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::env::set_var("XDG_RUNTIME_DIR", &root);
+
+        let dir = secure_runtime_dir(false).expect("creation");
+        let mode = std::fs::metadata(&dir)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700, "le repertoire doit rester prive");
+        // Deuxieme appel: le repertoire existe deja et reste accepte.
+        assert_eq!(secure_runtime_dir(false).expect("revalidation"), dir);
+
+        // Ouvert au monde, il est refuse plutot que corrige en aveugle.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert!(secure_runtime_dir(false).is_err(), "mode 0755 accepte");
+
+        if let Some(previous) = previous {
+            std::env::set_var("XDG_RUNTIME_DIR", previous);
+        } else {
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

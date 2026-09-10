@@ -13,6 +13,7 @@ use crate::app::{Action, SshpassApp, ToastKind};
 use crate::config::{AuthMethod, Connection, ProtonRef};
 use crate::pass::secret::{self, Secret};
 use crate::pass::{SshKeySource, SshKeyType};
+use crate::term::command;
 use crate::ui::modal::Modal;
 use crate::ui::{self, pixel};
 
@@ -479,19 +480,33 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                                 &palette,
                             );
                             if item_exists {
-                                // Honnetete sur la seule fuite possible: la mise a
-                                // jour n'a pas d'equivalent par entree standard.
+                                // La mise a jour tente d'abord l'entree standard;
+                                // le repli par ligne de commande, lui, se demande.
                                 ui.label(
                                     RichText::new(
-                                        "Mise a jour: pass-cli n'accepte la valeur que sur sa ligne \
-                                         de commande, brievement visible des autres processus. Une \
-                                         creation, elle, passe par l'entree standard.",
+                                        "Mise a jour: la valeur part par l'entree standard, comme \
+                                         a la creation. Si la version de pass-cli installee ne le \
+                                         sait pas, la mise a jour echoue plutot que d'ecrire le \
+                                         mot de passe dans la ligne de commande — le repli se \
+                                         debloque dans les reglages.",
                                     )
                                     .size(10.0)
                                     .color(palette.warning),
                                 );
                             }
                         }
+                    }
+                    AuthMethod::KeyboardInteractive => {
+                        ui::section_title(ui, "Saisie manuelle", &palette);
+                        ui::hint(
+                            ui,
+                            "Ce mode sert aux serveurs qui posent leurs propres questions \
+                             (PAM, code a usage unique, second facteur). Les questions sont \
+                             ecrites par le serveur: rien n'y repond automatiquement, et \
+                             aucun secret du coffre n'est branche sur cette connexion. Vous \
+                             tapez la reponse dans le terminal.",
+                            &palette,
+                        );
                     }
                     AuthMethod::Agent | AuthMethod::KeyFile => {
                         ui::section_title(ui, "Cle SSH", &palette);
@@ -613,6 +628,32 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                                 .desired_rows(2)
                                 .desired_width(f32::INFINITY),
                         );
+                        // Les options ne sont pas passees a un shell — ssh les
+                        // recoit comme arguments — mais certaines directives
+                        // font executer un programme local, ou coupent la
+                        // verification d'empreinte. On le dit plutot que de
+                        // laisser croire a un simple reglage.
+                        let powerful = command::dangerous_options(
+                            &editor
+                                .options_text
+                                .lines()
+                                .map(str::trim)
+                                .filter(|line| !line.is_empty())
+                                .map(str::to_string)
+                                .collect::<Vec<_>>(),
+                        );
+                        if !powerful.is_empty() {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} s'execute ou desactive une verification a l'ouverture \
+                                     de la connexion. N'utilisez ces directives que sur une \
+                                     configuration dont vous etes l'auteur.",
+                                    powerful.join(", ")
+                                ))
+                                .size(10.0)
+                                .color(palette.warning),
+                            );
+                        }
                     });
                 });
 

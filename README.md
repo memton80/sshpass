@@ -275,7 +275,28 @@ Il ecrit un script `SSH_ASKPASS` (mode 0700) qui ne contient que l'URI
 `pass://coffre/item/champ`, et laisse `ssh` l'executer lui-meme. Le mot de passe
 ne passe donc ni par la memoire de sshpass-gui, ni par le PTY, ni par les journaux.
 
+Le script est propre a **chaque session** — deux onglets ouverts sur la meme
+machine ne partagent pas de fichier — et il vit dans
+`$XDG_RUNTIME_DIR/sshpass-gui`, cree en 0700 et verifie avant chaque usage.
+Faute de `XDG_RUNTIME_DIR`, le repli sur `/tmp` — que tous les comptes de la
+machine peuvent ecrire — se demande explicitement dans les reglages.
+
+Ce mode negocie `password` **seul**, jamais `keyboard-interactive` : dans ce
+dernier, c'est le serveur qui redige la question posee a l'askpass, et un
+serveur hostile n'aurait qu'a en poser une pour se faire servir le secret du
+coffre. Le script verifie en plus que l'invite est bien celle que `ssh`
+fabrique (`utilisateur@hote's password: `) et ne repond a rien d'autre.
+
 Necessite OpenSSH 8.4 ou plus recent (pour `SSH_ASKPASS_REQUIRE=force`).
+
+### Serveurs a second facteur
+
+Choisissez « **Interactif (saisie manuelle)** » (`auth = "keyboard-interactive"`)
+pour les serveurs qui posent leurs propres questions : PAM, code a usage unique,
+second facteur. Aucun secret du coffre n'est branche sur ce mode — les questions
+viennent du serveur, donc seul un humain peut decider quoi y repondre — et
+`SSH_ASKPASS_REQUIRE=never` ecarte tout askpass herite de l'environnement. Vous
+tapez la reponse dans le terminal.
 
 ### Enregistrer un secret dans le coffre
 
@@ -302,16 +323,21 @@ Ou passe le secret, exactement :
 | Operation | Commande `pass-cli` | Transmission |
 | --- | --- | --- |
 | Creation d'un identifiant | `item create login --from-template -` | entree standard |
-| Mise a jour d'un mot de passe | `item update --field password=…` | ligne de commande |
+| Mise a jour d'un mot de passe | `item update --from-template -` | entree standard |
 | Import d'une cle | `item create ssh-key import --from-private-key` | un chemin |
 | Generation d'une cle | `item create ssh-key generate` | rien ne sort du coffre |
 
-La creation passe par l'entree standard, donc le mot de passe n'apparait pas
-dans `/proc/<pid>/cmdline`. La **mise a jour** est la seule exception :
-`pass-cli item update` n'accepte les valeurs que sur sa ligne de commande.
-L'interface l'indique sous le bouton. Rien n'est jamais ecrit sur le disque, et
-le champ de saisie est efface des le clic — voir
-[ADR 0007](docs/adr/0007-ecriture-dans-proton-pass.md).
+Tout passe par l'entree standard : le mot de passe n'apparait donc pas dans
+`/proc/<pid>/cmdline`, que **tous** les comptes de la machine peuvent lire.
+
+Si la version de `pass-cli` installee ne connait pas `--from-template` sur
+`item update`, le seul autre chemin documente est `--field password=…`, donc la
+ligne de commande. Ce repli est **refuse par defaut** : la mise a jour echoue
+avec un message qui l'explique, et se debloque en cochant « Mot de passe en
+ligne de commande » dans les reglages.
+
+Rien n'est jamais ecrit sur le disque, et le champ de saisie est efface des le
+clic — voir [ADR 0007](docs/adr/0007-ecriture-dans-proton-pass.md).
 
 ### Raccourcis
 
@@ -361,6 +387,47 @@ item = "web-01"
 **Aucun secret n'est ecrit dans ce fichier** — uniquement des references vers
 les items du coffre. Un test unitaire le verifie.
 
+### Reglages de securite
+
+```toml
+[security]
+# Repondre a une requete OSC 52 « lecture du presse-papiers » (deconseille).
+remote_clipboard_read = false
+# Laisser une application distante ecrire dans le presse-papiers local.
+remote_clipboard_write = true
+clipboard_write_limit = 65536
+# Se replier sur /tmp faute de XDG_RUNTIME_DIR.
+allow_temp_runtime_dir = false
+# Accepter `item update --field password=…` si pass-cli ignore --from-template.
+allow_argv_fallback = false
+```
+
+Ces quatre reglages sont **fermes par defaut** (l'ecriture du presse-papiers
+mise a part) : chacun ouvre quelque chose a la machine distante ou aux autres
+comptes du poste. Ils s'editent aussi dans **Reglages → Securite**, ou chaque
+case porte l'explication de ce qu'elle ouvre.
+
+Le plus important est le premier. OSC 52 est une sequence a double sens : la
+meme sert a poser une valeur dans le presse-papiers et, avec `?`, a demander au
+terminal de la **renvoyer**. Un serveur compromis peut donc l'emettre et
+recuperer ce que vous venez de copier — mot de passe, jeton, URL privee — sans
+que vous ayez colle quoi que ce soit. sshpass-gui n'y repond pas, et vous le
+signale la premiere fois qu'un serveur essaie.
+
+### Une configuration n'est pas qu'un reglage
+
+Une connexion porte des options `ssh -o` libres, et `ssh` sait executer des
+programmes **locaux** pour le compte de sa configuration : `ProxyCommand`,
+`LocalCommand` avec `PermitLocalCommand`, `KnownHostsCommand`, `Match exec`.
+Ces options ne passent par aucun shell — `ssh` les recoit comme arguments — mais
+ouvrir un `config.toml` recu d'un tiers revient a executer ce qu'il contient.
+**Ne le faites pas.** La fiche de connexion signale ces directives quand vous
+les saisissez ; elle ne les interdit pas, car un bastion ou un tunnel en vit.
+
+Le detail du modele de menace — ce que le logiciel promet, et ce qu'il ne
+promet pas — est dans [SECURITY.md](SECURITY.md), avec la marche a suivre pour
+signaler une vulnerabilite.
+
 ## Developpement
 
 ```bash
@@ -397,7 +464,24 @@ src/
 * **checks** — `cargo fmt --check`, `clippy -D warnings`, `cargo test`, plus la
   validation des metadonnees de logitheque (`desktop-file-validate`,
   `appstreamcli validate --pedantic`, et la coherence de version).
+* **audit** — `cargo audit --deny unsound --deny yanked` et `cargo deny check`.
+  Aucun des controles ci-dessus ne dit quoi que ce soit d'une faille publiee
+  dans une caisse tierce : le code compile et passe, vulnerable. Pour un
+  logiciel qui manipule des mots de passe et des cles SSH, la nouvelle doit
+  arriver par la CI plutot que par un utilisateur. La politique — avis,
+  licences, provenances, doublons — est dans [`deny.toml`](deny.toml). Job
+  separe : une faille annoncee un mardi ne doit pas empecher de construire un
+  paquet le mercredi. `unmaintained` est rapporte mais ne bloque pas : qu'une
+  dependance transitive soit abandonnee ne se corrige pas en montant une
+  version, et une CI rouge sur un motif qu'on ne peut pas traiter est une CI
+  qu'on apprend a ignorer.
 * **linux** — build release, puis `.deb`, `.rpm` et AppImage.
+
+La chaine elle-meme est verrouillee : les actions sont **epinglees par SHA**
+(une etiquette se deplace, un SHA nomme un arbre precis), les outils AppImage
+telecharges puis executes sur le runner sont figes a une version et leur
+**SHA256 est verifie avant** le `chmod +x`, et le jeton du workflow est en
+`contents: read`. Les paquets publies sont accompagnes d'un `SHA256SUMS`.
 
 Les binaires ne sont pas seulement compiles : `.github/scripts/smoke-test.sh`
 les **lance vraiment** sur un serveur X virtuel et echoue s'ils s'arretent
@@ -417,10 +501,19 @@ detecte. Le binaire nu et l'AppImage passent chacun ce test.
   ([ADR 0002](docs/adr/0002-integration-pass-cli.md)) ; a confronter a une
   sortie reelle. Les commandes d'ecriture, elles, sont documentees et leurs
   arguments verifies par des tests qui pilotent un faux `pass-cli`.
-* Mettre a jour un mot de passe expose brievement sa valeur dans
-  `/proc/<pid>/cmdline` : `pass-cli item update` n'offre aucune alternative a
-  `--field`. La creation, elle, passe par l'entree standard
+* Mettre a jour un mot de passe suppose que `pass-cli item update` accepte
+  `--from-template -`. Sinon la mise a jour **echoue** plutot que de passer par
+  `--field password=…`, qui exposerait la valeur dans `/proc/<pid>/cmdline` ;
+  le repli se debloque dans les reglages
   ([ADR 0007](docs/adr/0007-ecriture-dans-proton-pass.md)).
+* Le pont `SSH_ASKPASS` ne repond qu'a l'invite que `ssh` fabrique lui-meme.
+  Avec `SSH_ASKPASS_REQUIRE=force`, la confirmation d'empreinte d'un hote
+  inconnu passe elle aussi par l'askpass : elle est donc refusee, et la
+  premiere connexion a une machine demande d'accepter son empreinte autrement
+  (`ssh` en ligne de commande, ou `StrictHostKeyChecking=accept-new`).
+* L'ecriture OSC 52 reste permise (bornee, desactivable) : un serveur peut donc
+  remplacer le contenu du presse-papiers. Relisez ce que vous collez apres une
+  session sur une machine dont vous n'etes pas sur.
 * La cle publique d'une cle generee n'est pas affichee dans l'application : la
   lire supposerait de recuperer aussi la partie privee. Elle se recupere depuis
   Proton Pass ou via `ssh-add -L`.

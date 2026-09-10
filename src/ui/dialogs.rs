@@ -164,6 +164,104 @@ fn settings(app: &mut SshpassApp, ctx: &egui::Context) {
                 });
 
             ui::separator(ui, &palette);
+            ui::section_title(ui, "Securite", &palette);
+            ui::hint(
+                ui,
+                "Chaque case decochee est fermee volontairement: la cocher ouvre \
+                 quelque chose a la machine distante ou aux autres comptes du poste.",
+                &palette,
+            );
+            ui.add_space(4.0);
+            egui::Grid::new("settings_security")
+                .num_columns(2)
+                .spacing([12.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label("Presse-papiers");
+                    changed |= ui
+                        .checkbox(
+                            &mut app.config.security.remote_clipboard_read,
+                            "Le serveur peut LIRE le presse-papiers",
+                        )
+                        .on_hover_text(
+                            "Deconseille. La sequence OSC 52 permet a une application \
+                             distante de demander le contenu du presse-papiers local, et \
+                             sshpass-gui le lui renverrait — sans que vous ayez colle quoi \
+                             que ce soit. Un presse-papiers d'administrateur contient \
+                             souvent un mot de passe ou un jeton.",
+                        )
+                        .changed();
+                    ui.end_row();
+
+                    ui.label("");
+                    changed |= ui
+                        .checkbox(
+                            &mut app.config.security.remote_clipboard_write,
+                            "Le serveur peut ECRIRE dans le presse-papiers",
+                        )
+                        .on_hover_text(
+                            "Bien plus benin que la lecture, et utile: c'est ce qui fait \
+                             marcher la copie depuis tmux ou vim a distance.",
+                        )
+                        .changed();
+                    ui.end_row();
+
+                    ui.label("Ecriture max");
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut app.config.security.clipboard_write_limit)
+                                .range(1024..=1_048_576)
+                                .suffix(" o"),
+                        )
+                        .on_hover_text(
+                            "Au-dela, l'ecriture est ignoree: un distant hostile ne \
+                             remplit pas le presse-papiers du poste a chaque frappe.",
+                        )
+                        .changed();
+                    ui.end_row();
+
+                    ui.label("Repli /tmp");
+                    changed |= ui
+                        .checkbox(
+                            &mut app.config.security.allow_temp_runtime_dir,
+                            "Utiliser /tmp faute de XDG_RUNTIME_DIR",
+                        )
+                        .on_hover_text(
+                            "Les scripts askpass et les sockets d'agent SSH y seraient \
+                             poses. /tmp est partage par tous les comptes de la machine.",
+                        )
+                        .changed();
+                    ui.end_row();
+
+                    ui.label("Mise a jour");
+                    changed |= ui
+                        .checkbox(
+                            &mut app.config.security.allow_argv_fallback,
+                            "Mot de passe en ligne de commande si besoin",
+                        )
+                        .on_hover_text(
+                            "Le gabarit part normalement par l'entree standard. Si la \
+                             version de `pass-cli` installee ne le sait pas, le seul autre \
+                             chemin place le mot de passe dans /proc/<pid>/cmdline, que \
+                             tous les comptes de la machine peuvent lire.",
+                        )
+                        .changed();
+                    ui.end_row();
+                });
+
+            if !crate::config::has_private_runtime_dir() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "XDG_RUNTIME_DIR est absent sur ce poste: sans le repli, \
+                         l'authentification par mot de passe et l'agent dedie ne \
+                         demarreront pas.",
+                    )
+                    .size(11.0)
+                    .color(palette.danger),
+                );
+            }
+
+            ui::separator(ui, &palette);
             ui::section_title(ui, "Affichage", &palette);
             egui::Grid::new("settings_ui")
                 .num_columns(2)
@@ -215,6 +313,7 @@ fn settings(app: &mut SshpassApp, ctx: &egui::Context) {
             &app.config.proton_pass.binary.clone(),
             app.config.proton_pass.agent_mode,
             app.config.proton_pass.refresh_interval,
+            app.config.security.allow_temp_runtime_dir,
         );
         app.save_config();
     }

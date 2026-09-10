@@ -17,11 +17,11 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-use crate::config::{runtime_dir, AgentMode};
+use crate::config::{runtime_dir, secure_runtime_dir, AgentMode};
 use crate::pass::cli::{PassCli, PassError};
 
 /// Nombre de lignes de sortie conservees par agent pour le diagnostic.
@@ -68,25 +68,44 @@ pub struct AgentManager {
     cli: PassCli,
     mode: AgentMode,
     refresh_interval: u64,
+    /// Accepter de poser les sockets dans `/tmp` faute de `XDG_RUNTIME_DIR`.
+    ///
+    /// Une socket d'agent SSH est une porte ouverte sur toutes les cles du
+    /// coffre: elle n'a rien a faire dans un repertoire que la machine entiere
+    /// peut ecrire. Cf. `config::secure_runtime_dir`.
+    allow_temp_runtime_dir: bool,
     agents: HashMap<String, Agent>,
 }
 
 impl AgentManager {
-    pub fn new(binary: &str, mode: AgentMode, refresh_interval: u64) -> Self {
+    pub fn new(
+        binary: &str,
+        mode: AgentMode,
+        refresh_interval: u64,
+        allow_temp_runtime_dir: bool,
+    ) -> Self {
         Self {
             cli: PassCli::new(binary),
             mode,
             refresh_interval,
+            allow_temp_runtime_dir,
             agents: HashMap::new(),
         }
     }
 
     /// Applique une nouvelle configuration. Changer de binaire ou quitter le
     /// mode `OwnAgent` arrete les agents en cours.
-    pub fn reconfigure(&mut self, binary: &str, mode: AgentMode, refresh_interval: u64) {
+    pub fn reconfigure(
+        &mut self,
+        binary: &str,
+        mode: AgentMode,
+        refresh_interval: u64,
+        allow_temp_runtime_dir: bool,
+    ) {
         let binary_changed = binary != self.cli.binary();
         self.cli = PassCli::new(binary);
         self.refresh_interval = refresh_interval;
+        self.allow_temp_runtime_dir = allow_temp_runtime_dir;
         if self.mode != mode || binary_changed {
             self.mode = mode;
             self.stop_all();
@@ -149,7 +168,9 @@ impl AgentManager {
 
     fn spawn(&mut self, vault: &str) -> Result<(), PassError> {
         let socket = Self::socket_path(vault);
-        std::fs::create_dir_all(socket.parent().unwrap_or_else(|| Path::new(".")))?;
+        // Cree le repertoire **et** verifie qu'il n'est qu'a nous: la socket
+        // qui va y naitre donne acces aux cles du coffre.
+        secure_runtime_dir(self.allow_temp_runtime_dir)?;
         // Une socket orpheline (agent tue sans nettoyage) empecherait le bind.
         if socket.exists() {
             let _ = std::fs::remove_file(&socket);
@@ -352,14 +373,15 @@ mod tests {
 
     #[test]
     fn disabled_mode_never_spawns() {
-        let mut manager = AgentManager::new("pass-cli", AgentMode::Disabled, 3600);
+        let mut manager = AgentManager::new("pass-cli", AgentMode::Disabled, 3600, false);
         assert_eq!(manager.ensure("Coffre"), AgentState::Stopped);
         assert_eq!(manager.state_of("Coffre"), AgentState::Stopped);
     }
 
     #[test]
     fn missing_binary_marks_agent_failed() {
-        let mut manager = AgentManager::new("pass-cli-qui-n-existe-pas", AgentMode::OwnAgent, 3600);
+        let mut manager =
+            AgentManager::new("pass-cli-qui-n-existe-pas", AgentMode::OwnAgent, 3600, true);
         assert!(matches!(manager.ensure("Coffre"), AgentState::Failed(_)));
         assert!(manager.socket_for("Coffre").is_none());
         assert!(matches!(manager.state_of("Coffre"), AgentState::Failed(_)));
@@ -367,7 +389,7 @@ mod tests {
 
     #[test]
     fn empty_vault_is_ignored() {
-        let mut manager = AgentManager::new("pass-cli", AgentMode::OwnAgent, 3600);
+        let mut manager = AgentManager::new("pass-cli", AgentMode::OwnAgent, 3600, false);
         assert_eq!(manager.ensure(""), AgentState::Stopped);
     }
 }
