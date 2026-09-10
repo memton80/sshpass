@@ -135,6 +135,13 @@ impl Tab {
         }
     }
 
+    pub fn session_mut(&mut self) -> Option<&mut TerminalSession> {
+        match &mut self.state {
+            TabState::Running(session) => Some(session),
+            _ => None,
+        }
+    }
+
     /// Vrai tant que la connexion n'a rien donne a voir.
     ///
     /// Couvre les deux attentes que l'utilisateur subit sans rien pouvoir

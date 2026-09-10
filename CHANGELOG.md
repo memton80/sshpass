@@ -41,6 +41,40 @@ la mise a jour echoue en vous le disant plutot que d'exposer le secret ; le cas
 echeant, la case « Mot de passe en ligne de commande » des reglages rend
 l'ancien comportement.
 
+### Le terminal se comporte enfin comme un terminal
+
+`Ctrl+C` ne coupait rien. `Tab` ne completait rien : il envoyait le curseur
+promener dans les boutons de la barre laterale, apres quoi l'onglet ne recevait
+plus une seule touche. Les fleches, `Echap` et `Alt+B` avaient le meme genre de
+travers. Rien de tout cela ne venait de l'emulation, qui est celle d'alacritty :
+c'est la boite a outils d'interface qui prenait les touches au passage, chacune
+pour une bonne raison qui n'a pas cours dans un terminal.
+
+**Le terminal possede maintenant le clavier** au lieu de se contenter des
+touches dont aucun bouton ne veut. Il le reclame, et il garde `Tab`, les
+fleches et `Echap` — la completion du shell, l'historique, la sortie de `vim`.
+Une fenetre modale le lui fait rendre, comme avant.
+
+**`Ctrl+C` interrompt la commande en cours.** La copie, c'est `Ctrl+Maj+C`, et
+le collage `Ctrl+Maj+V` : le partage de tous les terminaux, celui que le manuel
+decrivait deja. `Ctrl+V` redevient donc le `^V` de readline.
+
+**`Alt+B` ne tape plus de « b ».** La combinaison partait en double, une fois
+comme sequence et une fois comme texte.
+
+**La souris va au programme distant quand il la demande.** `htop` change de
+tri, `vim` deplace son curseur, `tmux` redimensionne ses volets, `less` defile.
+`Maj` enfonce rend la selection locale — la convention habituelle — et `Ctrl`
+pendant un glisser selectionne en colonnes. La molette n'ignore plus les
+petits crans d'un pave tactile.
+
+**Les programmes qui suivent le focus l'apprennent** : changer d'onglet ou de
+fenetre fait recharger a `vim` un fichier modifie sous lui et teint le volet
+inactif de `tmux`.
+
+Le detail, et les deux limites qui restent, sont dans
+[ADR 0009](docs/adr/0009-entrees-du-terminal.md).
+
 ### Un panneau « Securite » dans les reglages
 
 Quatre interrupteurs, tous fermes par defaut sauf l'ecriture du presse-papiers,

@@ -11,13 +11,25 @@ const TAB_HEIGHT: f32 = 30.0;
 pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let palette = app.palette;
-    // Le terminal ne capture le clavier que si aucun champ de saisie ni
-    // fenetre modale ne l'a deja.
-    let interactive = ctx.memory(|m| m.focused()).is_none()
-        && app.editor.is_none()
+    // Le terminal reclame le clavier des qu'aucune fenetre modale ne l'occupe:
+    // il le prend alors pour de bon (focus egui), au lieu de se contenter des
+    // touches dont personne ne veut. C'est ce qui lui rend `Tab`, les fleches
+    // et `Echap`.
+    let available = app.editor.is_none()
         && app.pending_delete.is_none()
         && app.new_folder_name.is_none()
         && !app.settings_open;
+
+    // Un onglet qu'on quitte n'a plus le clavier: `vim` et `tmux`, qui
+    // demandent a suivre le focus, doivent l'apprendre au changement d'onglet
+    // comme ils l'apprennent au changement de fenetre.
+    for (index, tab) in app.tabs.iter_mut().enumerate() {
+        if Some(index) != app.active_tab {
+            if let Some(session) = tab.session_mut() {
+                session.set_focus(false);
+            }
+        }
+    }
 
     egui::CentralPanel::no_frame()
         .frame(Frame::new().fill(palette.bg))
@@ -39,7 +51,7 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                     // terminal changerait le nombre de colonnes a chaque frame
                     // et declencherait une cascade de redimensionnements.
                     ui.multiply_opacity(progress);
-                    terminal(app, ui, &ctx, index, interactive)
+                    terminal(app, ui, &ctx, index, available)
                 }
                 _ => {
                     app.active_tab = None;
@@ -313,7 +325,7 @@ fn terminal(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
     index: usize,
-    interactive: bool,
+    available: bool,
 ) {
     let palette = app.palette;
     let scale = app.config.ui.pixel_scale as f32;
@@ -418,7 +430,7 @@ fn terminal(
                         });
                     });
             }
-            let output = render::show(ui, session, font_size, interactive);
+            let output = render::show(ui, session, font_size, available);
             if let Some(text) = output.copy {
                 session.set_clipboard(text.clone());
                 clipboard = Some(text);

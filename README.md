@@ -18,8 +18,11 @@ Journal des versions : [CHANGELOG.md](CHANGELOG.md).
   incrementale (`Ctrl+Maj+F`), actions rapides au survol.
 * **Ecran d'accueil** : recherche et section « Recentes » (`nom` + `user@host`).
 * **Terminal par onglet** : emulation xterm-256color, historique, selection
-  souris (simple / mot / ligne), copier-coller, redimensionnement dynamique,
-  couleurs 24 bits, gras et souligne.
+  souris (simple / mot / ligne / colonnes), copier-coller, redimensionnement
+  dynamique, couleurs 24 bits, gras et souligne. Le clavier lui appartient —
+  `Ctrl+C` interrompt, `Tab` complete, les fleches rappellent l'historique — et
+  la souris est transmise aux programmes qui la demandent (`htop`, `vim`,
+  `tmux`) — voir [ADR 0009](docs/adr/0009-entrees-du-terminal.md).
 * **Proton Pass dans l'interface** : parcourir les coffres et leurs items,
   associer un item a une connexion, voir et piloter l'etat des agents SSH.
 * **Ecriture dans le coffre** : le mot de passe saisi dans la fiche part
@@ -353,8 +356,29 @@ clic — voir [ADR 0007](docs/adr/0007-ecriture-dans-proton-pass.md).
 | `Maj+PagePrec` / `Maj+PageSuiv` | Defiler l'historique |
 | `Haut` / `Bas`, `Entree`, `Echap` | Naviguer, accepter, fermer une liste de suggestions |
 
-Les combinaisons `Ctrl+Maj+…` sont reservees a l'interface : tout le reste
-descend dans le terminal, y compris `Ctrl+C`, `Ctrl+D` et `Ctrl+F`.
+Seules les combinaisons `Ctrl+Maj+…` listees ci-dessus sont retenues par
+l'interface : **tout le reste descend dans le terminal**, `Ctrl+C`, `Tab`, les
+fleches et `Echap` compris. Le partage est celui de tous les terminaux :
+`Ctrl+C` interrompt la commande et `Ctrl+Maj+C` copie ; `Ctrl+V` est le
+« caractere suivant, litteralement » de readline et `Ctrl+Maj+V` colle.
+
+Tant qu'un onglet de terminal est ouvert, `Tab` va donc a la completion du
+shell et non au parcours des boutons — voir
+[ADR 0009](docs/adr/0009-entrees-du-terminal.md).
+
+### La souris dans le terminal
+
+| Geste | Effet |
+| --- | --- |
+| Glisser | Selection ; la selection part dans le presse-papiers au relachement |
+| Double / triple clic | Selection par mot / par ligne |
+| `Ctrl` + glisser | Selection en colonnes |
+| Molette | Historique, ou fleches quand un programme plein ecran est actif |
+| `Maj` + n'importe quel geste | Selection locale, meme si le programme distant suit la souris |
+
+Quand le programme distant demande la souris (`htop`, `vim`, `tmux`, `less`),
+clics, deplacements et molette lui sont transmis : les volets se redimensionnent
+et les listes defilent comme dans un terminal classique.
 
 ## Configuration
 

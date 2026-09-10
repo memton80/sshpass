@@ -36,10 +36,22 @@ fn tilde_key(number: u8, mods: &Modifiers) -> Vec<u8> {
     }
 }
 
+/// Combinaisons `Ctrl+Maj+…` que l'interface se reserve.
+///
+/// Le reste des `Ctrl+Maj` descend dans le PTY: `Ctrl+Maj+-` est le `^_` que
+/// `readline` attend pour annuler, `Ctrl+Maj+&` le `^^` de `vim`. Les bloquer
+/// tous, comme on le faisait, privait le terminal de touches qui n'ont aucun
+/// equivalent sans `Maj` sur un clavier francais.
+fn is_ui_shortcut(key: Key) -> bool {
+    matches!(
+        key,
+        Key::C | Key::V | Key::X | Key::A | Key::W | Key::T | Key::P | Key::F | Key::Tab
+    )
+}
+
 /// Encode une touche. `None` signifie "a laisser au flux de texte".
 pub fn encode(key: Key, mods: &Modifiers, mode: TermMode) -> Option<Vec<u8>> {
-    // Ctrl+Shift+X est reserve a l'interface (copier/coller, onglets).
-    if mods.ctrl && mods.shift {
+    if mods.ctrl && mods.shift && is_ui_shortcut(key) {
         return None;
     }
 
@@ -85,6 +97,13 @@ pub fn encode(key: Key, mods: &Modifiers, mode: TermMode) -> Option<Vec<u8>> {
         // Alt + caractere produit ESC suivi du caractere.
         key if mods.alt => {
             let c = printable(key)?;
+            // `Alt+Maj+B` vaut `ESC B` et non `ESC b`: c'est ainsi que
+            // `readline` distingue « mot precedent » de « majuscule au mot ».
+            let c = if mods.shift {
+                c.to_ascii_uppercase()
+            } else {
+                c
+            };
             let mut bytes = vec![0x1b];
             bytes.extend_from_slice(c.to_string().as_bytes());
             bytes
@@ -225,6 +244,114 @@ pub fn alternate_scroll(lines: i32, mode: TermMode) -> Option<Vec<u8>> {
         format!("\x1b[{letter}")
     };
     Some(sequence.repeat(count).into_bytes())
+}
+
+/// Bouton de souris, numerote comme le fait xterm.
+///
+/// La molette n'est pas un bouton pour le systeme, mais elle en est un pour un
+/// terminal: c'est ainsi que `less`, `htop` ou `tmux` la recoivent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left = 0,
+    Middle = 1,
+    Right = 2,
+    /// Aucun bouton: le code que xterm reserve au simple survol.
+    None = 3,
+    WheelUp = 64,
+    WheelDown = 65,
+}
+
+/// Ce qui arrive au bouton.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseAction {
+    Press,
+    Release,
+    /// Deplacement du pointeur, bouton tenu ou non.
+    Motion,
+}
+
+/// Vrai si le programme distant a demande a recevoir la souris.
+pub fn wants_mouse(mode: TermMode) -> bool {
+    mode.intersects(TermMode::MOUSE_MODE)
+}
+
+/// Encode un evenement souris pour le programme distant.
+///
+/// `column` et `line` sont des coordonnees de grille comptees a partir de
+/// zero. `None` quand le distant ne demande pas la souris, ou quand la
+/// position sort de ce que l'encodage historique sait dire.
+pub fn mouse_report(
+    button: MouseButton,
+    action: MouseAction,
+    column: usize,
+    line: usize,
+    mods: &Modifiers,
+    mode: TermMode,
+) -> Option<Vec<u8>> {
+    if !wants_mouse(mode) {
+        return None;
+    }
+
+    let modifiers = 4 * u8::from(mods.shift) + 8 * u8::from(mods.alt) + 16 * u8::from(mods.ctrl);
+    let sgr = mode.contains(TermMode::SGR_MOUSE);
+    let base = match action {
+        MouseAction::Press | MouseAction::Motion => button as u8,
+        // Seul le mode SGR sait dire quel bouton a ete relache; l'encodage
+        // historique n'a qu'un code unique pour « un bouton s'est leve ».
+        MouseAction::Release if sgr => button as u8,
+        MouseAction::Release => 3,
+    };
+    let motion = if matches!(action, MouseAction::Motion) {
+        32
+    } else {
+        0
+    };
+    let code = base + modifiers + motion;
+
+    if sgr {
+        let final_byte = match action {
+            MouseAction::Release => 'm',
+            _ => 'M',
+        };
+        return Some(
+            format!("\x1b[<{};{};{}{}", code, column + 1, line + 1, final_byte).into_bytes(),
+        );
+    }
+
+    // Encodage historique: chaque coordonnee tient dans un octet, decale de
+    // 33. Au-dela, il n'y a rien a envoyer qui ne soit pas faux.
+    let utf8 = mode.contains(TermMode::UTF8_MOUSE);
+    let limit = if utf8 { 2015 } else { 223 };
+    if column >= limit || line >= limit {
+        return None;
+    }
+    let mut bytes = vec![0x1b, b'[', b'M', 32 + code];
+    push_coordinate(column, utf8, &mut bytes);
+    push_coordinate(line, utf8, &mut bytes);
+    Some(bytes)
+}
+
+/// Une coordonnee de l'encodage historique, eventuellement en UTF-8.
+fn push_coordinate(value: usize, utf8: bool, out: &mut Vec<u8>) {
+    let value = value + 33;
+    if utf8 && value >= 128 {
+        out.push((0xC0 + value / 64) as u8);
+        out.push((0x80 + (value & 63)) as u8);
+    } else {
+        out.push(value as u8);
+    }
+}
+
+/// Prise et perte du focus, pour les programmes qui la demandent (`vim`
+/// recharge un fichier modifie, `tmux` change la teinte du volet actif).
+pub fn focus_report(focused: bool, mode: TermMode) -> Option<Vec<u8>> {
+    if !mode.contains(TermMode::FOCUS_IN_OUT) {
+        return None;
+    }
+    Some(match focused {
+        true => b"\x1b[I".to_vec(),
+        false => b"\x1b[O".to_vec(),
+    })
 }
 
 #[cfg(test)]
@@ -374,6 +501,118 @@ mod tests {
         assert_eq!(
             encode_paste("a\r\nb\nc", TermMode::NONE),
             b"a\rb\rc".to_vec()
+        );
+    }
+
+    #[test]
+    fn reserved_ui_shortcuts_are_not_forwarded_but_the_others_are() {
+        let ctrl_shift = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(encode(Key::C, &ctrl_shift, TermMode::NONE), None);
+        assert_eq!(encode(Key::V, &ctrl_shift, TermMode::NONE), None);
+        assert_eq!(encode(Key::Tab, &ctrl_shift, TermMode::NONE), None);
+        // `Ctrl+Maj+-` est le `^_` de readline: il doit descendre.
+        assert_eq!(
+            encode(Key::Minus, &ctrl_shift, TermMode::NONE),
+            Some(vec![31])
+        );
+        assert_eq!(encode(Key::Z, &ctrl_shift, TermMode::NONE), Some(vec![26]));
+    }
+
+    #[test]
+    fn alt_shift_sends_an_uppercase_letter() {
+        let alt_shift = Modifiers {
+            alt: true,
+            shift: true,
+            ..Default::default()
+        };
+        assert_eq!(encoded(Key::B, &alt_shift, TermMode::NONE), "\x1bB");
+    }
+
+    #[test]
+    fn the_mouse_is_silent_unless_the_program_asks_for_it() {
+        assert_eq!(
+            mouse_report(
+                MouseButton::Left,
+                MouseAction::Press,
+                0,
+                0,
+                &NONE,
+                TermMode::NONE
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn sgr_reports_name_the_released_button() {
+        let mode = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        let press = mouse_report(MouseButton::Right, MouseAction::Press, 10, 4, &NONE, mode)
+            .expect("rapport attendu");
+        assert_eq!(String::from_utf8(press).expect("utf8"), "\x1b[<2;11;5M");
+
+        let release = mouse_report(MouseButton::Right, MouseAction::Release, 10, 4, &NONE, mode)
+            .expect("rapport attendu");
+        assert_eq!(String::from_utf8(release).expect("utf8"), "\x1b[<2;11;5m");
+    }
+
+    #[test]
+    fn legacy_reports_lose_the_button_on_release() {
+        let mode = TermMode::MOUSE_REPORT_CLICK;
+        let press = mouse_report(MouseButton::Middle, MouseAction::Press, 0, 0, &NONE, mode)
+            .expect("rapport attendu");
+        assert_eq!(press, vec![0x1b, b'[', b'M', 32 + 1, 33, 33]);
+        let release = mouse_report(MouseButton::Middle, MouseAction::Release, 0, 0, &NONE, mode)
+            .expect("rapport attendu");
+        assert_eq!(release, vec![0x1b, b'[', b'M', 32 + 3, 33, 33]);
+    }
+
+    #[test]
+    fn motion_and_modifiers_shift_the_button_code() {
+        let mode = TermMode::MOUSE_MOTION | TermMode::SGR_MOUSE;
+        let report = mouse_report(MouseButton::Left, MouseAction::Motion, 0, 0, &ctrl(), mode)
+            .expect("rapport attendu");
+        // 0 (bouton gauche) + 16 (Ctrl) + 32 (deplacement).
+        assert_eq!(String::from_utf8(report).expect("utf8"), "\x1b[<48;1;1M");
+    }
+
+    #[test]
+    fn the_wheel_is_a_button_for_the_remote_program() {
+        let mode = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        let report = mouse_report(MouseButton::WheelUp, MouseAction::Press, 2, 3, &NONE, mode)
+            .expect("rapport attendu");
+        assert_eq!(String::from_utf8(report).expect("utf8"), "\x1b[<64;3;4M");
+    }
+
+    #[test]
+    fn legacy_reports_stop_where_the_encoding_does() {
+        let mode = TermMode::MOUSE_REPORT_CLICK;
+        assert!(mouse_report(MouseButton::Left, MouseAction::Press, 222, 0, &NONE, mode).is_some());
+        assert_eq!(
+            mouse_report(MouseButton::Left, MouseAction::Press, 223, 0, &NONE, mode),
+            None,
+            "au-dela de 223 colonnes l'encodage historique ment"
+        );
+        // En UTF-8 la coordonnee passe sur deux octets au lieu de deborder.
+        let utf8 = mode | TermMode::UTF8_MOUSE;
+        let report = mouse_report(MouseButton::Left, MouseAction::Press, 200, 0, &NONE, utf8)
+            .expect("rapport attendu");
+        assert_eq!(report.len(), 7, "colonne sur deux octets attendue");
+    }
+
+    #[test]
+    fn focus_is_only_reported_when_requested() {
+        assert_eq!(focus_report(true, TermMode::NONE), None);
+        assert_eq!(
+            focus_report(true, TermMode::FOCUS_IN_OUT),
+            Some(b"\x1b[I".to_vec())
+        );
+        assert_eq!(
+            focus_report(false, TermMode::FOCUS_IN_OUT),
+            Some(b"\x1b[O".to_vec())
         );
     }
 

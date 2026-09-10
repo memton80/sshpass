@@ -173,6 +173,11 @@ pub struct TerminalSession {
     saw_output: bool,
     /// Demarrage de la session, qui borne cette attente.
     started_at: Instant,
+    /// Le terminal a-t-il le clavier?
+    ///
+    /// Les programmes qui demandent le mode « focus in/out » (`vim`, `tmux`)
+    /// veulent l'apprendre; les autres n'en sauront rien.
+    has_focus: bool,
     pub title: String,
     /// Renseigne quand le processus distant s'est termine.
     pub exit_status: Option<String>,
@@ -244,6 +249,7 @@ impl TerminalSession {
             cleanup,
             saw_output: false,
             started_at: Instant::now(),
+            has_focus: false,
             title: spec.program.clone(),
             exit_status: None,
         })
@@ -274,6 +280,21 @@ impl TerminalSession {
         *self.term.lock().mode()
     }
 
+    /// Signale la prise ou la perte du clavier.
+    ///
+    /// Sans cela, `vim` ne recharge pas un fichier modifie en revenant sur la
+    /// fenetre et `tmux` continue de teinter un volet qui n'a plus le focus.
+    /// Rien n'est emis tant que le programme distant n'a pas demande ce mode.
+    pub fn set_focus(&mut self, focused: bool) {
+        if self.has_focus == focused {
+            return;
+        }
+        self.has_focus = focused;
+        if let Some(bytes) = keys::focus_report(focused, self.mode()) {
+            self.write(bytes);
+        }
+    }
+
     /// Ecrit des octets bruts dans le PTY.
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
         let bytes = bytes.into();
@@ -283,10 +304,6 @@ impl TerminalSession {
         if let Err(err) = self.sender.send(Msg::Input(bytes)) {
             log::warn!("ecriture PTY impossible: {err}");
         }
-    }
-
-    pub fn write_str(&self, text: &str) {
-        self.write(text.as_bytes().to_vec());
     }
 
     /// Redimensionne la grille. Sans effet si la taille n'a pas change.
