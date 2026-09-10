@@ -464,13 +464,17 @@ src/
 * **checks** — `cargo fmt --check`, `clippy -D warnings`, `cargo test`, plus la
   validation des metadonnees de logitheque (`desktop-file-validate`,
   `appstreamcli validate --pedantic`, et la coherence de version).
-* **audit** — `cargo audit --deny warnings` et `cargo deny check`. Aucun des
-  controles ci-dessus ne dit quoi que ce soit d'une faille publiee dans une
-  caisse tierce : le code compile et passe, vulnerable. Pour un logiciel qui
-  manipule des mots de passe et des cles SSH, la nouvelle doit arriver par la
-  CI plutot que par un utilisateur. La politique — avis, licences, provenances,
-  doublons — est dans [`deny.toml`](deny.toml). Job separe : une faille annoncee
-  un mardi ne doit pas empecher de construire un paquet le mercredi.
+* **audit** — `cargo audit --deny unsound --deny yanked` et `cargo deny check`.
+  Aucun des controles ci-dessus ne dit quoi que ce soit d'une faille publiee
+  dans une caisse tierce : le code compile et passe, vulnerable. Pour un
+  logiciel qui manipule des mots de passe et des cles SSH, la nouvelle doit
+  arriver par la CI plutot que par un utilisateur. La politique — avis,
+  licences, provenances, doublons — est dans [`deny.toml`](deny.toml). Job
+  separe : une faille annoncee un mardi ne doit pas empecher de construire un
+  paquet le mercredi. `unmaintained` est rapporte mais ne bloque pas : qu'une
+  dependance transitive soit abandonnee ne se corrige pas en montant une
+  version, et une CI rouge sur un motif qu'on ne peut pas traiter est une CI
+  qu'on apprend a ignorer.
 * **linux** — build release, puis `.deb`, `.rpm` et AppImage.
 
 La chaine elle-meme est verrouillee : les actions sont **epinglees par SHA**

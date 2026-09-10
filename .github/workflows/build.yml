@@ -96,8 +96,14 @@ jobs:
       - name: Outils d'audit
         run: cargo install --locked cargo-audit cargo-deny
 
+      # Bloquant sur ce qui se corrige: une vulnerabilite (comportement par
+      # defaut), une caisse retiree de crates.io, un defaut de surete. Pas sur
+      # `unmaintained`: qu'une dependance transitive soit abandonnee ne se
+      # corrige pas en montant une version, et une CI rouge sur un motif qu'on
+      # ne peut pas traiter est une CI qu'on apprend a ignorer. `cargo deny` le
+      # rapporte en avertissement.
       - name: cargo audit
-        run: cargo audit --deny warnings
+        run: cargo audit --deny unsound --deny yanked
 
       - name: cargo deny
         run: cargo deny check
