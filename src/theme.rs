@@ -96,6 +96,13 @@ pub fn apply(ctx: &egui::Context, palette: &Palette, font_size: f32) {
     visuals.widgets.active.weak_bg_fill = palette.accent_dim;
     visuals.widgets.active.bg_stroke = Stroke::new(1.0, palette.accent);
 
+    // Rythme des animations natives d'egui — fondu d'ouverture d'une fenetre,
+    // depliage d'un dossier de la barre laterale. Elles n'ont pas de reglage
+    // individuel: sans cette ligne, elles tourneraient a la valeur par defaut
+    // (~0,08 s) pendant que les animations maison suivent `ui::anim`, et les
+    // deux familles se decaleraient a l'oeil.
+    style.animation_time = crate::ui::anim::VIEW;
+
     style.spacing.item_spacing = egui::vec2(8.0, 6.0);
     style.spacing.button_padding = egui::vec2(10.0, 5.0);
     style.spacing.menu_margin = egui::Margin::same(4);

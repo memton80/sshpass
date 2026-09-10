@@ -35,9 +35,11 @@ Journal des versions : [CHANGELOG.md](CHANGELOG.md).
 * **Autocompletion** sur l'hote, l'utilisateur, le coffre et l'item, alimentee
   par les connexions deja enregistrees et le coffre deja charge — navigation
   aux fleches, `Entree` ou `Tab` pour accepter, `Echap` pour fermer.
-* **Interface animee** : survols en fondu, transitions de vue et glissement du
-  panneau Proton Pass, le tout avec les animateurs natifs d'egui (aucune
-  dependance ajoutee) — voir [ADR 0005](docs/adr/0005-animations-et-autocompletion.md).
+* **Interface animee** : survols en fondu, transitions de vue, fenetres et
+  dossiers qui s'ouvrent et se referment, barre de chargement dans l'onglet
+  pendant qu'une connexion SSH s'etablit, notifications qui entrent et sortent
+  par le bord — le tout avec les animateurs natifs d'egui (aucune dependance
+  ajoutee) — voir [ADR 0005](docs/adr/0005-animations-et-autocompletion.md).
 * **Theme sombre violet/gris**, habillage pixel art dessine (icones, bordures,
   pastilles, curseur), texte en **police systeme**.
 

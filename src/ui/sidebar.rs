@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 
+use egui::collapsing_header::CollapsingState;
 use egui::{Align2, CornerRadius, FontId, Frame, Margin, Rect, RichText, Sense, Vec2};
 
 use crate::app::{Action, SshpassApp};
@@ -100,27 +101,42 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                         if children.is_empty() && !needle.trim().is_empty() {
                             continue;
                         }
-                        let expanded = expanded_folders.contains(&folder.id);
+                        // Une recherche active deplie tout: sinon les resultats
+                        // seraient invisibles dans les dossiers replies.
+                        let searching = !needle.trim().is_empty();
+                        let expanded = expanded_folders.contains(&folder.id) || searching;
+
+                        // Le pliage passe par `CollapsingState`, l'etat natif
+                        // d'egui: c'est lui qui interpole la hauteur et coupe
+                        // le contenu debordant. La verite reste
+                        // `expanded_folders`; l'etat egui n'anime que le
+                        // mouvement.
+                        let mut collapsing = CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            ui.make_persistent_id(("dossier", &folder.id)),
+                            expanded,
+                        );
+                        collapsing.set_open(expanded);
+                        let openness = collapsing.openness(ui.ctx());
+
                         let toggled = folder_row(
                             ui,
                             &folder.name,
                             children.len(),
-                            expanded,
+                            openness,
                             &palette,
                             scale,
                             &folder.id,
                             actions,
                         );
                         if toggled {
-                            if expanded {
+                            if expanded_folders.contains(&folder.id) {
                                 expanded_folders.remove(&folder.id);
                             } else {
                                 expanded_folders.insert(folder.id.clone());
                             }
                         }
-                        // Une recherche active deplie tout: sinon les resultats
-                        // seraient invisibles dans les dossiers replies.
-                        if expanded || !needle.trim().is_empty() {
+                        collapsing.show_body_unindented(ui, |ui| {
                             ui.indent(&folder.id, |ui| {
                                 for connection in children {
                                     connection_row(
@@ -128,7 +144,7 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                                     );
                                 }
                             });
-                        }
+                        });
                     }
 
                     let orphans: Vec<&Connection> = config
@@ -183,12 +199,15 @@ fn search_row(
 
 /// Dessine l'en-tete d'un dossier. Renvoie `true` si l'utilisateur l'a plie
 /// ou deplie.
+///
+/// `openness` est l'avancement du depliage (0 replie, 1 ouvert): le chevron
+/// suit le mouvement du contenu au lieu de basculer avant lui.
 #[allow(clippy::too_many_arguments)]
 fn folder_row(
     ui: &mut egui::Ui,
     name: &str,
     count: usize,
-    expanded: bool,
+    openness: f32,
     palette: &Palette,
     scale: f32,
     folder_id: &str,
@@ -207,20 +226,28 @@ fn folder_row(
                 anim::lerp_color(palette.surface, palette.surface_high, t),
             );
         }
-        let chevron = if expanded {
-            pixel::CHEVRON_DOWN
-        } else {
-            pixel::CHEVRON_RIGHT
-        };
         let icon_y = rect.center().y - 4.0 * scale;
-        pixel::draw(
-            painter,
-            egui::pos2(rect.left() + 2.0, icon_y),
-            &chevron,
-            scale,
-            anim::lerp_color(palette.text_dim, palette.text, t),
-            palette.text_dim,
-        );
+        // Deux sprites superposes en fondu croise: une rotation de chevron
+        // serait floutee a chaque angle intermediaire, la ou un fondu reste
+        // net a tous les stades.
+        let chevron_color = anim::lerp_color(palette.text_dim, palette.text, t);
+        for (sprite, share) in [
+            (&pixel::CHEVRON_RIGHT, 1.0 - openness),
+            (&pixel::CHEVRON_DOWN, openness),
+        ] {
+            if share <= 0.0 {
+                continue;
+            }
+            let color = anim::fade(chevron_color, share);
+            pixel::draw(
+                painter,
+                egui::pos2(rect.left() + 2.0, icon_y),
+                sprite,
+                scale,
+                color,
+                color,
+            );
+        }
         pixel::draw(
             painter,
             egui::pos2(rect.left() + 6.0 + 8.0 * scale, icon_y),

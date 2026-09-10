@@ -1,15 +1,18 @@
 //! Boites de dialogue: confirmation, creation de dossier, reglages.
 
-use egui::{Margin, RichText};
+use egui::RichText;
 
 use crate::app::{Action, SshpassApp};
 use crate::config::AgentMode;
-use crate::ui;
+use crate::ui::{self, modal::Modal};
 
 pub fn show(app: &mut SshpassApp, ctx: &egui::Context, _now: f64) {
     delete_confirmation(app, ctx);
     new_folder(app, ctx);
     settings(app, ctx);
+    // Apres toutes les modales: c'est l'absence d'une fenetre a cette passe
+    // qui declenche son animation de fermeture.
+    ui::modal::fade_out_closed(ctx, &app.palette);
 }
 
 fn delete_confirmation(app: &mut SshpassApp, ctx: &egui::Context) {
@@ -22,35 +25,26 @@ fn delete_confirmation(app: &mut SshpassApp, ctx: &egui::Context) {
         return;
     };
 
-    egui::Window::new("Supprimer la connexion")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .frame(
-            egui::Frame::window(&ctx.style_of(egui::Theme::Dark))
-                .fill(palette.surface)
-                .inner_margin(Margin::same(14)),
-        )
-        .show(ctx, |ui| {
-            ui.label(format!("Supprimer « {name} » ?"));
-            ui::hint(
-                ui,
-                "Les secrets restent dans Proton Pass; seule la reference est retiree.",
-                &palette,
-            );
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(RichText::new("Supprimer").color(palette.danger))
-                    .clicked()
-                {
-                    app.actions.push(Action::DeleteConnection(id.clone()));
-                }
-                if ui.button("Annuler").clicked() {
-                    app.pending_delete = None;
-                }
-            });
+    Modal::new("Supprimer la connexion").show(ctx, &palette, |ui| {
+        ui.label(format!("Supprimer « {name} » ?"));
+        ui::hint(
+            ui,
+            "Les secrets restent dans Proton Pass; seule la reference est retiree.",
+            &palette,
+        );
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            if ui
+                .button(RichText::new("Supprimer").color(palette.danger))
+                .clicked()
+            {
+                app.actions.push(Action::DeleteConnection(id.clone()));
+            }
+            if ui.button("Annuler").clicked() {
+                app.pending_delete = None;
+            }
         });
+    });
 }
 
 fn new_folder(app: &mut SshpassApp, ctx: &egui::Context) {
@@ -61,39 +55,30 @@ fn new_folder(app: &mut SshpassApp, ctx: &egui::Context) {
     let mut close = false;
     let mut create = false;
 
-    egui::Window::new("Nouveau dossier")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .frame(
-            egui::Frame::window(&ctx.style_of(egui::Theme::Dark))
-                .fill(palette.surface)
-                .inner_margin(Margin::same(14)),
-        )
-        .show(ctx, |ui| {
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut name)
-                    .hint_text("Production")
-                    .desired_width(240.0),
-            );
-            // Focus a l'ouverture seulement: le redemander a chaque frame
-            // empecherait la validation par Entree d'etre detectee.
-            if ui.memory(|m| m.focused()).is_none() {
-                response.request_focus();
-            }
-            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+    Modal::new("Nouveau dossier").show(ctx, &palette, |ui| {
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut name)
+                .hint_text("Production")
+                .desired_width(240.0),
+        );
+        // Focus a l'ouverture seulement: le redemander a chaque frame
+        // empecherait la validation par Entree d'etre detectee.
+        if ui.memory(|m| m.focused()).is_none() {
+            response.request_focus();
+        }
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            create = true;
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui.button("Creer").clicked() {
                 create = true;
             }
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if ui.button("Creer").clicked() {
-                    create = true;
-                }
-                if ui.button("Annuler").clicked() {
-                    close = true;
-                }
-            });
+            if ui.button("Annuler").clicked() {
+                close = true;
+            }
         });
+    });
 
     app.new_folder_name = Some(name.clone());
     if create && !name.trim().is_empty() {
@@ -113,18 +98,10 @@ fn settings(app: &mut SshpassApp, ctx: &egui::Context) {
     let mut open = true;
     let mut changed = false;
 
-    egui::Window::new("Reglages")
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .frame(
-            egui::Frame::window(&ctx.style_of(egui::Theme::Dark))
-                .fill(palette.surface)
-                .inner_margin(Margin::same(14)),
-        )
-        .show(ctx, |ui| {
-            ui.set_width(460.0);
+    Modal::new("Reglages")
+        .closable(&mut open)
+        .width(460.0)
+        .show(ctx, &palette, |ui| {
             ui::section_title(ui, "Proton Pass", &palette);
             egui::Grid::new("settings_pass")
                 .num_columns(2)

@@ -219,6 +219,64 @@ pub fn frame(painter: &Painter, rect: Rect, color: Color32, scale: f32) {
     );
 }
 
+/// Nombre de carres du chenillard de chargement.
+const LOADER_BLOCKS: usize = 4;
+
+/// Chenillard de chargement, dessine a une position donnee.
+///
+/// Quatre carres qui s'allument tour a tour: c'est le `spinner` d'egui traduit
+/// en pixel art, sans rotation — un disque qui tourne serait floute a chaque
+/// angle intermediaire, la ou des carres restent nets.
+pub fn draw_loader(painter: &Painter, top_left: Pos2, scale: f32, color: Color32, phase: f32) {
+    let block = 4.0 * scale;
+    let gap = 2.0 * scale;
+    for index in 0..LOADER_BLOCKS {
+        let intensity = crate::ui::anim::chase(phase, index, LOADER_BLOCKS);
+        let left = (top_left.x + index as f32 * (block + gap)).round();
+        let top = top_left.y.round();
+        painter.rect_filled(
+            Rect::from_min_size(Pos2::new(left, top), Vec2::splat(block)),
+            CornerRadius::ZERO,
+            crate::ui::anim::fade(color, intensity),
+        );
+    }
+}
+
+/// Taille occupee par le chenillard, pour reserver sa place.
+pub fn loader_size(scale: f32) -> Vec2 {
+    let block = 4.0 * scale;
+    let gap = 2.0 * scale;
+    Vec2::new(
+        LOADER_BLOCKS as f32 * block + (LOADER_BLOCKS - 1) as f32 * gap,
+        block,
+    )
+}
+
+/// Chenillard de chargement pose dans la mise en page courante.
+pub fn loader(ui: &mut Ui, scale: f32, color: Color32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(loader_size(scale), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let phase = crate::ui::anim::cycle(ui.ctx(), 0.9);
+        draw_loader(ui.painter(), rect.min, scale, color, phase);
+    }
+    response
+}
+
+/// Barre de progression pixel: un cadre d'un pixel, rempli de gauche a droite.
+pub fn progress(painter: &Painter, rect: Rect, fraction: f32, fill: Color32, border: Color32) {
+    frame(painter, rect, border, 1.0);
+    let inner = rect.shrink(2.0);
+    let width = inner.width() * fraction.clamp(0.0, 1.0);
+    if width <= 0.0 {
+        return;
+    }
+    painter.rect_filled(
+        Rect::from_min_size(inner.min, Vec2::new(width.round(), inner.height())),
+        CornerRadius::ZERO,
+        fill,
+    );
+}
+
 /// Pastille d'etat (agent actif, connexion ouverte...).
 pub fn status_dot(ui: &mut Ui, color: Color32, scale: f32, tooltip: &str) -> Response {
     let response = icon(ui, &DOT, scale, color);

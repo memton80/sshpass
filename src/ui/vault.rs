@@ -61,7 +61,7 @@ fn session_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
 
     if app.login.is_running() {
         ui.horizontal(|ui| {
-            ui.spinner();
+            pixel::loader(ui, app.config.ui.pixel_scale as f32, palette.accent);
             ui::hint(ui, "Reconnexion a Proton Pass...", &palette);
         });
         match app.login.state().url() {
@@ -101,7 +101,7 @@ fn session_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
         }
         PassStatus::Probing => {
             ui.horizontal(|ui| {
-                ui.spinner();
+                pixel::loader(ui, app.config.ui.pixel_scale as f32, palette.accent_soft);
                 ui::hint(ui, "Verification de la session...", &palette);
             });
         }
@@ -290,7 +290,7 @@ fn items_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
 
     if app.loading_items.contains(&chosen) {
         ui.horizontal(|ui| {
-            ui.spinner();
+            pixel::loader(ui, app.config.ui.pixel_scale as f32, palette.accent_soft);
             ui::hint(ui, "Lecture du coffre...", &palette);
         });
         return;

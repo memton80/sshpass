@@ -5,7 +5,7 @@
 //! cle SSH y est importee ou generee. La fiche ne conserve ensuite qu'une
 //! reference `pass://coffre/item`.
 
-use egui::{ComboBox, Margin, RichText};
+use egui::{ComboBox, RichText};
 
 use crate::ui::autocomplete::{Autocomplete, Suggestion};
 
@@ -13,6 +13,7 @@ use crate::app::{Action, SshpassApp, ToastKind};
 use crate::config::{AuthMethod, Connection, ProtonRef};
 use crate::pass::secret::{self, Secret};
 use crate::pass::{SshKeySource, SshKeyType};
+use crate::ui::modal::Modal;
 use crate::ui::{self, pixel};
 
 /// Etat de saisie. Les champs numeriques et les listes sont edites sous forme
@@ -237,18 +238,7 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
         load_items = Some(vault_key.clone());
     }
 
-    egui::Window::new(title)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .frame(
-            egui::Frame::window(&ctx.style_of(egui::Theme::Dark))
-                .fill(palette.surface)
-                .inner_margin(Margin::same(14)),
-        )
-        .show(ctx, |ui| {
-            ui.set_width(520.0);
-
+    Modal::new(title).width(520.0).show(ctx, &palette, |ui| {
             // La fiche s'est allongee avec le bloc d'ecriture dans le coffre:
             // le corps defile, mais les boutons d'action restent hors du
             // defilement, toujours atteignables sur un petit ecran.
@@ -477,7 +467,7 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                                 });
                             }
                         });
-                        write_status(ui, &palette, blocker.as_deref(), writing);
+                        write_status(ui, &palette, scale, blocker.as_deref(), writing);
                         if blocker.is_none() && !writing {
                             let action = if item_exists { "mis a jour" } else { "cree" };
                             ui::hint(
@@ -576,7 +566,7 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                                 });
                             }
                         }
-                        write_status(ui, &palette, blocker.as_deref(), writing);
+                        write_status(ui, &palette, scale, blocker.as_deref(), writing);
                         if blocker.is_none() && !writing {
                             ui::hint(
                                 ui,
@@ -768,12 +758,13 @@ fn write_blocker(
 fn write_status(
     ui: &mut egui::Ui,
     palette: &crate::theme::Palette,
+    scale: f32,
     blocker: Option<&str>,
     writing: bool,
 ) {
     if writing {
         ui.horizontal(|ui| {
-            ui.spinner();
+            pixel::loader(ui, scale, palette.accent);
             ui::hint(ui, "Ecriture dans Proton Pass...", palette);
         });
         return;
