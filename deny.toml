@@ -1,0 +1,64 @@
+# Politique de dependances, appliquee par `cargo deny check` dans la CI.
+#
+# `cargo fmt`, `clippy` et les tests ne disent rien d'une faille publiee dans
+# une caisse tierce: le code compile et passe, vulnerable. Pour un logiciel qui
+# manipule des mots de passe et des cles SSH, la nouvelle doit arriver par la
+# CI. Ce fichier regle quatre questions distinctes: les avis de securite, les
+# licences, les provenances, et ce qu'on interdit de tirer.
+
+[advisories]
+# Les avis RustSec sont bloquants. Aucune exception n'est ouverte ici: une
+# faille qu'on decide d'accepter se met dans `ignore`, avec son identifiant et
+# une ligne disant pourquoi — pas en desactivant le controle.
+ignore = []
+
+[licenses]
+# sshpass-gui est sous GPL-3.0-or-later. Ne sont acceptees que les licences
+# permissives compatibles avec une redistribution sous GPL: une dependance
+# copyleft plus stricte, ou a clause publicitaire, ne peut pas entrer sans
+# decision explicite.
+allow = [
+    # La caisse elle-meme.
+    "GPL-3.0-or-later",
+    # Licences permissives des dependances.
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    # Polices embarquees par la fonctionnalite `default_fonts` d'eframe: ce
+    # sont des fichiers de police, pas du code lie. Leurs licences imposent des
+    # conditions sur la redistribution de la police, pas sur le programme.
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+confidence-threshold = 0.8
+# Une licence permise qu'aucune dependance n'utilise n'est pas une anomalie:
+# la liste est ecrite pour durer, pas pour coller a l'arborescence du jour.
+unused-allowed-license = "allow"
+
+[bans]
+# Deux versions de la meme caisse, c'est deux fois la surface a auditer et deux
+# fois le travail quand un avis tombe. Avertissement plutot que refus:
+# l'arborescence d'une pile graphique en compte toujours quelques-unes, et un
+# echec de CI sur ce motif ne serait qu'un bruit qu'on apprendrait a ignorer.
+multiple-versions = "warn"
+# Une dependance en `*` accepte silencieusement la prochaine version publiee,
+# quelle qu'elle soit. C'est exactement ce qu'on cherche a eviter.
+wildcards = "deny"
+
+[sources]
+# Tout doit venir de crates.io. Une caisse tiree d'un depot git arbitraire
+# echappe a l'index, aux avis RustSec et a la revue: si le besoin se presente,
+# il se discute et s'ajoute ici nommement.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

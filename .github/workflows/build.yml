@@ -9,12 +9,28 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Le jeton du workflow ne sert qu'a lire la caisse. Sans cette ligne, un
+# depot configure en « read and write » donnerait a chaque etape — y compris
+# aux binaires telecharges plus bas — de quoi pousser sur la branche.
+permissions:
+  contents: read
+
+# ---------------------------------------------------------------------------
+# Actions epinglees par SHA, jamais par etiquette.
+#
+# `actions/checkout@v4` designe ce que le proprietaire du depot appelle « v4 »
+# aujourd'hui: une etiquette se deplace, et un compte compromis la deplacerait
+# sans que rien ici ne change. Un SHA, lui, nomme un arbre precis. Le
+# commentaire garde la version lisible; c'est lui qu'on met a jour a la main,
+# apres avoir regarde le diff.
+# ---------------------------------------------------------------------------
+
 jobs:
   checks:
     name: Format, lint et tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Dependances systeme
         run: |
@@ -24,11 +40,11 @@ jobs:
             libx11-dev libx11-xcb-dev libxcb-xkb-dev \
             libgl1-mesa-dev libfontconfig1-dev pkg-config
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
@@ -53,11 +69,44 @@ jobs:
             exit 1
           fi
 
+  # ---------------------------------------------------------------------------
+  # Audit des dependances.
+  #
+  # `cargo fmt`, `clippy` et les tests ne disent rien d'une faille publiee dans
+  # une caisse tierce: le code compile et passe, vulnerable. Pour un logiciel
+  # qui manipule des mots de passe et des cles SSH, la nouvelle doit arriver
+  # par la CI, pas par un utilisateur.
+  #
+  # `cargo-deny` couvre a la fois les avis RustSec, les licences, les sources
+  # et les doublons (cf. deny.toml). Le job est separe: une faille annoncee un
+  # mardi ne doit pas empecher de construire un paquet le mercredi.
+  # ---------------------------------------------------------------------------
+  audit:
+    name: Audit des dependances
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # `--locked` installe la version que le Cargo.lock de l'outil fige: le
+      # verificateur ne doit pas etre le maillon qui bouge tout seul.
+      - name: Outils d'audit
+        run: cargo install --locked cargo-audit cargo-deny
+
+      - name: cargo audit
+        run: cargo audit --deny warnings
+
+      - name: cargo deny
+        run: cargo deny check
+
   linux:
     name: Linux — binaire, .deb, .rpm et AppImage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Dependances systeme
         run: |
@@ -68,9 +117,9 @@ jobs:
             libgl1-mesa-dev libfontconfig1-dev pkg-config \
             xvfb fonts-dejavu-core file rpm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Outils de packaging
         run: cargo install --locked cargo-deb cargo-generate-rpm
@@ -89,19 +138,40 @@ jobs:
       - name: Paquet RPM
         run: cargo generate-rpm
 
+      # -------------------------------------------------------------------
+      # Les outils AppImage sont telecharges puis **executes** sur le runner,
+      # avec acces au workspace et a l'environnement du job. Deux precautions:
+      #
+      # * une version figee au lieu de `continuous`, une etiquette qui bouge
+      #   a chaque construction amont;
+      # * un SHA256 verifie avant le premier `chmod +x`. Sans lui, epingler la
+      #   version ne protege de rien: le fichier servi sous une etiquette peut
+      #   etre remplace.
+      #
+      # Mettre a jour l'outil, c'est changer la version **et** l'empreinte,
+      # dans le meme commit, apres l'avoir recalculee soi-meme.
+      # -------------------------------------------------------------------
       - name: AppImage
         env:
           # Les runners GitHub n'ont pas FUSE: les outils AppImage doivent
           # s'extraire eux-memes au lieu de se monter.
           APPIMAGE_EXTRACT_AND_RUN: 1
           ARCH: x86_64
+          LINUXDEPLOY_VERSION: 1-alpha-20250213-2
+          LINUXDEPLOY_SHA256: 4648f278ab3ef31f819e67c30d50f462640e5365a77637d7e6f2ad9fd0b4522a
+          LINUXDEPLOY_PLUGIN_VERSION: 1-alpha-20250213-1
+          LINUXDEPLOY_PLUGIN_SHA256: 992d502a248e14ab185448ddf6f6e7d25558cb84d4623c354c3af350c25fccb3
         run: |
           set -eu
           base=https://github.com/linuxdeploy
           curl -fsSLo linuxdeploy \
-            "$base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
+            "$base/linuxdeploy/releases/download/$LINUXDEPLOY_VERSION/linuxdeploy-x86_64.AppImage"
           curl -fsSLo linuxdeploy-plugin-appimage \
-            "$base/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
+            "$base/linuxdeploy-plugin-appimage/releases/download/$LINUXDEPLOY_PLUGIN_VERSION/linuxdeploy-plugin-appimage-x86_64.AppImage"
+          # Verifie avant d'etre rendu executable, jamais apres.
+          printf '%s  linuxdeploy\n%s  linuxdeploy-plugin-appimage\n' \
+            "$LINUXDEPLOY_SHA256" "$LINUXDEPLOY_PLUGIN_SHA256" > linuxdeploy.sha256
+          sha256sum -c linuxdeploy.sha256
           chmod +x linuxdeploy linuxdeploy-plugin-appimage
           export PATH="$PWD:$PATH"
           # linuxdeploy ne connait que binaire, .desktop et icone: le
@@ -134,6 +204,14 @@ jobs:
           ls -la dist/
           for f in dist/*; do echo "--- $f"; file -b "$f"; done
 
+      # Les empreintes accompagnent les paquets: qui les recupere doit pouvoir
+      # verifier qu'il tient bien ce que la CI a produit.
+      - name: Empreintes des paquets
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
       # Un asset oublie dans Cargo.toml ne casse aucune compilation: il rend
       # seulement l'application anonyme dans les logitheques. On verifie donc
       # que le fichier est bien dans les paquets livres.
@@ -149,8 +227,7 @@ jobs:
           grep -q "/$metainfo" rpm-contents.txt
           echo "metainfo present dans le .deb et le .rpm"
 
-
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sshpass-gui-linux-x86_64
           path: dist/*
