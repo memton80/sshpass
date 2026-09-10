@@ -346,6 +346,30 @@ mod tests {
     }
 
     #[test]
+    fn external_output_survives_anything_it_is_handed() {
+        // La sortie d'un programme externe n'est pas du texte bien eleve: elle
+        // peut couper un mot sensible, coller un caractere multi-octets contre
+        // un guillemet echappe, ou s'arreter au milieu. Rien de tout cela ne
+        // doit paniquer sur une frontiere de caractere.
+        for hostile in [
+            "password=é",
+            "password=\"a\\é\"",
+            "password=",
+            "password",
+            "\"password\":",
+            "\"password\":\"\\\"é\"",
+            "é=password",
+            "passwordé=x",
+            "\u{0}password\u{0}=x",
+            "password=é\u{1b}[2Jsuite",
+            "「password」=秘密",
+        ] {
+            let cleaned = sanitize_external_output(hostile);
+            assert!(!cleaned.contains('\u{1b}'), "sequence ANSI: {cleaned}");
+        }
+    }
+
+    #[test]
     fn external_output_is_bounded() {
         let flood = "x".repeat(MAX_EXTERNAL_OUTPUT * 3);
         let cleaned = sanitize_external_output(&flood);
