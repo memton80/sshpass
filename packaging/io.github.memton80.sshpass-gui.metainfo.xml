@@ -130,6 +130,20 @@
   </requires>
 
   <releases>
+    <release version="1.1.0" date="2026-09-10">
+      <description>
+        <p>L'interface montre ce qu'elle fait.</p>
+        <p xml:lang="en">The interface now shows what it is doing.</p>
+        <ul>
+          <li>Une connexion SSH en cours se voit: le bandeau sous l'onglet devient une barre de chargement</li>
+          <li xml:lang="en">A connection in progress is visible: the strip under the tab becomes a loading bar</li>
+          <li>Les fenetres et les dossiers s'ouvrent et se referment en fondu</li>
+          <li xml:lang="en">Windows and folders open and close with a fade</li>
+          <li>Jauge du temps restant pendant le demarrage d'un agent Proton Pass</li>
+          <li xml:lang="en">A gauge shows the time left while a Proton Pass agent starts</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.0.0" date="2026-09-09">
       <description>
         <p>Premiere version stable.</p>

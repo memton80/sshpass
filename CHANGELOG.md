@@ -1,6 +1,6 @@
 # Journal des versions
 
-## A venir
+## 1.1.0 — 10 septembre 2026
 
 ### L'interface montre ce qu'elle fait
 
