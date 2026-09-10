@@ -15,8 +15,9 @@
 //! entre le navigateur et Proton. sshpass-gui ne voit qu'une URL publique.
 
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::pass::cli::{PassCli, PassError};
@@ -30,6 +31,14 @@ pub const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Nombre de lignes de sortie conservees pour le diagnostic.
 const LOG_LINES: usize = 40;
+
+/// Sursis accorde aux lecteurs de sortie apres la mort du processus.
+///
+/// Un processus peut mourir avant que ses tubes aient ete lus: la derniere
+/// ligne — celle qui dit *pourquoi* la connexion a echoue — est encore en
+/// transit. Sans ce sursis, l'utilisateur lit « s'est arrete sans se
+/// connecter » au lieu de « network unreachable », une fois sur dix.
+const DRAIN_GRACE: Duration = Duration::from_millis(200);
 
 /// Ou en est la reconnexion.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +77,11 @@ pub enum LoginOutcome {
 /// Supervise au plus un `pass-cli login` a la fois.
 pub struct LoginManager {
     child: Option<Child>,
+    /// Sortie constatee, pas encore remontee: on attend que les lecteurs
+    /// aient fini de vider les tubes (cf. `DRAIN_GRACE`).
+    exited: Option<(ExitStatus, Instant)>,
+    /// Threads de lecture des tubes. Leur fin signale un tube vide.
+    readers: Vec<JoinHandle<()>>,
     state: LoginState,
     log: Arc<Mutex<Vec<String>>>,
     /// Premiere URL vue dans la sortie, remplie par les threads de lecture.
@@ -85,6 +99,8 @@ impl LoginManager {
     pub fn new() -> Self {
         Self {
             child: None,
+            exited: None,
+            readers: Vec::new(),
             state: LoginState::Idle,
             log: Arc::new(Mutex::new(Vec::new())),
             url: Arc::new(Mutex::new(None)),
@@ -128,6 +144,7 @@ impl LoginManager {
                 }
             })?;
 
+        self.readers.clear();
         for pipe in [
             child
                 .stdout
@@ -143,7 +160,7 @@ impl LoginManager {
         {
             let log = Arc::clone(&self.log);
             let url = Arc::clone(&self.url);
-            std::thread::spawn(move || {
+            self.readers.push(std::thread::spawn(move || {
                 for line in BufReader::new(pipe)
                     .lines()
                     .map_while(std::result::Result::ok)
@@ -159,10 +176,11 @@ impl LoginManager {
                         lines.drain(..overflow);
                     }
                 }
-            });
+            }));
         }
 
         self.child = Some(child);
+        self.exited = None;
         self.state = LoginState::Starting;
         self.started = Some(Instant::now());
         Ok(())
@@ -173,6 +191,9 @@ impl LoginManager {
     /// Renvoie une issue une seule fois, quand le processus se termine ou que
     /// le delai est depasse.
     pub fn poll(&mut self) -> Option<LoginOutcome> {
+        if self.exited.is_some() {
+            return self.deliver();
+        }
         self.child.as_ref()?;
 
         // L'URL peut apparaitre a tout moment: des qu'elle est la, on la donne
@@ -190,15 +211,8 @@ impl LoginManager {
             .and_then(|child| child.try_wait().ok().flatten());
         if let Some(status) = exited {
             self.child = None;
-            self.state = LoginState::Idle;
-            self.started = None;
-            return Some(if status.success() {
-                LoginOutcome::Succeeded
-            } else {
-                LoginOutcome::Failed(self.last_log().unwrap_or_else(|| {
-                    format!("`pass-cli login` s'est arrete sans se connecter ({status})")
-                }))
-            });
+            self.exited = Some((status, Instant::now()));
+            return self.deliver();
         }
 
         if self
@@ -214,6 +228,33 @@ impl LoginManager {
         None
     }
 
+    /// Remonte l'issue d'un processus termine, une fois ses tubes vides.
+    ///
+    /// Tant qu'un lecteur tourne encore, la derniere ligne de sortie peut etre
+    /// en route: on attend une frame de plus plutot que de perdre la raison de
+    /// l'echec. Passe `DRAIN_GRACE`, on remonte ce qu'on a — un petit-fils qui
+    /// aurait herite du tube le tiendrait ouvert indefiniment, et l'interface
+    /// n'a pas a l'attendre.
+    fn deliver(&mut self) -> Option<LoginOutcome> {
+        let (status, since) = self.exited?;
+        let drained = self.readers.iter().all(JoinHandle::is_finished);
+        if !drained && since.elapsed() < DRAIN_GRACE {
+            return None;
+        }
+
+        self.exited = None;
+        self.readers.clear();
+        self.state = LoginState::Idle;
+        self.started = None;
+        Some(if status.success() {
+            LoginOutcome::Succeeded
+        } else {
+            LoginOutcome::Failed(self.last_log().unwrap_or_else(|| {
+                format!("`pass-cli login` s'est arrete sans se connecter ({status})")
+            }))
+        })
+    }
+
     /// Arrete le flux en cours.
     pub fn cancel(&mut self) {
         if let Some(child) = self.child.as_mut() {
@@ -221,6 +262,8 @@ impl LoginManager {
             let _ = child.wait();
         }
         self.child = None;
+        self.exited = None;
+        self.readers.clear();
         self.state = LoginState::Idle;
         self.started = None;
     }
@@ -357,14 +400,19 @@ mod tests {
     /// jamais atteindre l'ouvreur de navigateur de la machine qui les lance.
     #[cfg(unix)]
     fn stub(name: &str, body: &str) -> (PassCli, std::path::PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let dir =
             std::env::temp_dir().join(format!("sshpass-gui-login-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let path = dir.join("pass-cli");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("ecriture");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        crate::pass::testing::write_stub(&path, body);
         (PassCli::new(path.to_string_lossy().into_owned()), dir)
+    }
+
+    /// Demarre le flux, en laissant passer un « Text file busy » (cf.
+    /// `pass::testing`).
+    #[cfg(unix)]
+    fn start(manager: &mut LoginManager, cli: &PassCli) {
+        crate::pass::testing::unhurried(|| manager.start(cli)).expect("lancement");
     }
 
     #[cfg(unix)]
@@ -383,7 +431,7 @@ mod tests {
     fn a_completed_flow_reports_success() {
         let (cli, dir) = stub("ok", "exit 0");
         let mut manager = LoginManager::new();
-        manager.start(&cli).expect("lancement");
+        start(&mut manager, &cli);
         assert!(manager.is_running());
         assert!(matches!(drain(&mut manager), LoginOutcome::Succeeded));
         // Le flux termine libere la place pour le suivant.
@@ -391,12 +439,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Verifie aussi que la sortie d'erreur est bien lue avant que l'echec ne
+    /// soit remonte: le processus meurt souvent avant que son tube soit vide
+    /// (cf. `DRAIN_GRACE`).
     #[cfg(unix)]
     #[test]
     fn a_failed_flow_carries_the_reason() {
         let (cli, dir) = stub("ko", "echo 'network unreachable' >&2; exit 1");
         let mut manager = LoginManager::new();
-        manager.start(&cli).expect("lancement");
+        start(&mut manager, &cli);
         match drain(&mut manager) {
             LoginOutcome::Failed(detail) => {
                 assert!(detail.contains("network unreachable"), "obtenu: {detail}")
@@ -413,7 +464,7 @@ mod tests {
         // en vie le temps du test.
         let (cli, dir) = stub("busy", "sleep 30");
         let mut manager = LoginManager::new();
-        manager.start(&cli).expect("lancement");
+        start(&mut manager, &cli);
         // Le second appel est un non-evenement, pas une erreur.
         manager.start(&cli).expect("second lancement");
         assert!(manager.is_running());

@@ -5,6 +5,52 @@ pub mod cli;
 pub mod login;
 pub mod secret;
 
+/// Aides partagees par les tests des sous-modules.
+///
+/// Les faux `pass-cli` sont des scripts que les tests ecrivent puis executent.
+/// Or un binaire de test est multi-thread: si un autre test forke pendant
+/// qu'on ecrit le script, son fils herite du descripteur d'ecriture encore
+/// ouvert, et le noyau refuse d'executer un fichier ouvert en ecriture —
+/// `ETXTBSY`, « Text file busy » — tant que ce fils n'a pas exec ou quitte.
+///
+/// La course est inherente a l'ecriture d'un executable depuis un processus
+/// multi-thread: le descripteur est deja duplique quand `write` rend la main.
+/// On ne peut donc pas l'eviter, seulement laisser passer l'orage.
+#[cfg(all(test, unix))]
+pub(crate) mod testing {
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    use super::cli::PassError;
+
+    /// Delai au-dela duquel un « Text file busy » n'est plus une course mais
+    /// un vrai probleme.
+    const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Ecrit un faux `pass-cli` executable par son seul proprietaire.
+    pub fn write_stub(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("ecriture");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    }
+
+    /// Rejoue l'appel tant que le script n'est pas encore executable.
+    pub fn unhurried<T>(mut attempt: impl FnMut() -> Result<T, PassError>) -> Result<T, PassError> {
+        let deadline = Instant::now() + BUSY_TIMEOUT;
+        loop {
+            match attempt() {
+                Err(PassError::Io(err))
+                    if err.kind() == std::io::ErrorKind::ExecutableFileBusy
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                outcome => return outcome,
+            }
+        }
+    }
+}
+
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 

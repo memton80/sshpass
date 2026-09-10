@@ -1034,30 +1034,30 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn session_probe_maps_the_three_outcomes() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("sshpass-gui-session-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("mkdir");
 
         let make = |name: &str, body: &str| {
             let path = dir.join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("ecriture");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+            crate::pass::testing::write_stub(&path, body);
             PassCli::new(path.to_string_lossy().into_owned())
         };
+        // `unhurried` laisse passer un « Text file busy » (cf. `pass::testing`).
+        let probe = |cli: PassCli| crate::pass::testing::unhurried(|| cli.session());
 
         let open = make("open", "echo '- Email: alex@proton.me'");
         assert_eq!(
-            open.session().expect("sonde"),
+            probe(open).expect("sonde"),
             Session::Open {
                 account: "alex@proton.me".into()
             }
         );
 
         let closed = make("closed", "echo 'Error: not logged in' >&2; exit 1");
-        assert!(matches!(closed.session(), Ok(Session::Closed(_))));
+        assert!(matches!(probe(closed), Ok(Session::Closed(_))));
 
         let locked = make("locked", "echo 'Session is locked' >&2; exit 1");
-        assert!(matches!(locked.session(), Ok(Session::Locked(_))));
+        assert!(matches!(probe(locked), Ok(Session::Locked(_))));
 
         // Un binaire absent reste une erreur: aucune reconnexion n'y changerait
         // quoi que ce soit.
@@ -1200,7 +1200,6 @@ mod tests {
     /// repond comme le vrai. Permet de verifier ce qui est reellement envoye.
     #[cfg(unix)]
     fn stub_cli(name: &str) -> (PassCli, std::path::PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!(
             "sshpass-gui-stub-{}-{name}-{:?}",
             std::process::id(),
@@ -1208,16 +1207,14 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("mkdir");
         let script = dir.join("pass-cli");
-        std::fs::write(
+        crate::pass::testing::write_stub(
             &script,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{dir}/args'\ncat > '{dir}/stdin'\n\
-                 echo 'Item created'\n",
+            &format!(
+                "printf '%s\\n' \"$@\" > '{dir}/args'\ncat > '{dir}/stdin'\n\
+                 echo 'Item created'",
                 dir = dir.display()
             ),
-        )
-        .expect("ecriture");
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        );
         (PassCli::new(script.to_string_lossy().into_owned()), dir)
     }
 
@@ -1226,7 +1223,8 @@ mod tests {
     fn creating_a_login_sends_the_password_on_stdin_only() {
         let (cli, dir) = stub_cli("create");
         let draft = LoginDraft::for_ssh("web-01", "root", "10.0.0.4", 2222, Secret::new("hunter2"));
-        let summary = cli.create_login("SSH Keys", &draft).expect("creation");
+        let summary = crate::pass::testing::unhurried(|| cli.create_login("SSH Keys", &draft))
+            .expect("creation");
         assert_eq!(summary, "Item created");
 
         let args = std::fs::read_to_string(dir.join("args")).expect("args");
@@ -1266,7 +1264,7 @@ mod tests {
         let key = dir.join("id_ed25519");
         std::fs::write(&key, "PRIVATE-KEY-CONTENT").expect("ecriture");
 
-        cli.import_ssh_key("SSH Keys", "web-01", &key)
+        crate::pass::testing::unhurried(|| cli.import_ssh_key("SSH Keys", "web-01", &key))
             .expect("import");
         let args = std::fs::read_to_string(dir.join("args")).expect("args");
         let stdin = std::fs::read_to_string(dir.join("stdin")).expect("stdin");
@@ -1297,8 +1295,10 @@ mod tests {
     #[test]
     fn generating_a_key_carries_type_and_comment() {
         let (cli, dir) = stub_cli("generate");
-        cli.generate_ssh_key("SSH Keys", "web-01", SshKeyType::Rsa4096, "root@10.0.0.4")
-            .expect("generation");
+        crate::pass::testing::unhurried(|| {
+            cli.generate_ssh_key("SSH Keys", "web-01", SshKeyType::Rsa4096, "root@10.0.0.4")
+        })
+        .expect("generation");
         let args = std::fs::read_to_string(dir.join("args")).expect("args");
         assert_eq!(
             args.lines().collect::<Vec<_>>(),
@@ -1331,8 +1331,10 @@ mod tests {
     #[test]
     fn updating_a_password_uses_the_documented_field_syntax() {
         let (cli, dir) = stub_cli("update");
-        cli.set_login_password("SSH Keys", "web-01", &Secret::new("hunter2"))
-            .expect("mise a jour");
+        crate::pass::testing::unhurried(|| {
+            cli.set_login_password("SSH Keys", "web-01", &Secret::new("hunter2"))
+        })
+        .expect("mise a jour");
         let args = std::fs::read_to_string(dir.join("args")).expect("args");
         assert_eq!(
             args.lines().collect::<Vec<_>>(),
