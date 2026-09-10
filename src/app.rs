@@ -261,6 +261,9 @@ impl SshpassApp {
         theme::install_system_fonts(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx, &theme::DARK, config.ui.font_size);
 
+        // Une session ferme son script askpass en partant; un plantage, non.
+        crate::pass::sweep_stale_askpass_scripts();
+
         let agents = AgentManager::new(
             &config.proton_pass.binary,
             config.proton_pass.agent_mode,

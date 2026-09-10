@@ -286,6 +286,49 @@ pub fn write_askpass_script(
     Ok(path)
 }
 
+/// Age au-dela duquel un script askpass oublie est considere comme un debris.
+///
+/// `ssh` ne lit le script qu'a l'ouverture de la connexion — `NumberOfPassword
+/// Prompts=1` — et jamais ensuite. Un fichier de la veille n'appartient donc a
+/// aucune session en train de s'authentifier, meme si cette session dure encore.
+const STALE_ASKPASS: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Efface les scripts askpass qu'un arret brutal a laisses derriere.
+///
+/// Une session supprime le sien en se fermant, mais un plantage ou un `SIGKILL`
+/// n'en laissent pas l'occasion, et il y a maintenant un fichier par session et
+/// non plus un par connexion. Ces debris ne contiennent aucun secret — une URI,
+/// rien de plus — mais ils s'accumulent.
+///
+/// Ne touche qu'aux fichiers assez vieux pour ne plus servir a personne: une
+/// seconde instance de sshpass-gui, lancee en meme temps, ne doit pas voir son
+/// askpass disparaitre entre l'ecriture et l'appel de `ssh`.
+pub fn sweep_stale_askpass_scripts() {
+    let dir = crate::config::runtime_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return; // pas encore de repertoire: rien a balayer
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("askpass-") || !name.ends_with(".sh") {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > STALE_ASKPASS);
+        if stale {
+            if let Err(err) = std::fs::remove_file(entry.path()) {
+                log::debug!("script askpass oublie non supprime: {err}");
+            }
+        }
+    }
+}
+
 /// En-tete du script askpass: le garde-fou qui decide si l'on repond.
 ///
 /// `ssh` passe le texte de l'invite en premier argument. Deux invites peuvent
@@ -429,6 +472,38 @@ mod tests {
             let err = write_askpass_script("pass-cli", "pass://V/I/password", "meme-id", false)
                 .expect_err("l'ecriture doit echouer");
             assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        });
+    }
+
+    #[test]
+    fn the_sweep_spares_the_scripts_still_in_use() {
+        with_runtime_dir("balayage", || {
+            let recent = write_askpass_script("pass-cli", "pass://V/I/password", "vivant", false)
+                .expect("ecriture");
+            let old = write_askpass_script("pass-cli", "pass://V/I/password", "oublie", false)
+                .expect("ecriture");
+            // Vieilli d'une semaine: aucune session ne peut encore en avoir
+            // besoin, `ssh` ne lit le script qu'a l'authentification.
+            let long_ago =
+                std::time::SystemTime::now() - std::time::Duration::from_secs(7 * 24 * 3600);
+            std::fs::File::open(&old)
+                .expect("ouverture")
+                .set_modified(long_ago)
+                .expect("horodatage");
+
+            // Un fichier etranger, meme vieux, n'est pas a nous.
+            let intrus = old.with_file_name("agent-prod-1.sock");
+            std::fs::write(&intrus, b"").expect("ecriture");
+            std::fs::File::open(&intrus)
+                .expect("ouverture")
+                .set_modified(long_ago)
+                .expect("horodatage");
+
+            sweep_stale_askpass_scripts();
+
+            assert!(recent.exists(), "un script frais a ete supprime");
+            assert!(!old.exists(), "le debris est reste");
+            assert!(intrus.exists(), "le balayage deborde de son perimetre");
         });
     }
 
