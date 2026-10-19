@@ -277,16 +277,6 @@ pub fn progress(painter: &Painter, rect: Rect, fraction: f32, fill: Color32, bor
     );
 }
 
-/// Pastille d'etat (agent actif, connexion ouverte...).
-pub fn status_dot(ui: &mut Ui, color: Color32, scale: f32, tooltip: &str) -> Response {
-    let response = icon(ui, &DOT, scale, color);
-    if tooltip.is_empty() {
-        response
-    } else {
-        response.on_hover_text(tooltip)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

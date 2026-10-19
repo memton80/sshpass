@@ -30,6 +30,12 @@ pub const PULSE: f32 = 1.2;
 /// Periode d'un aller-retour de barre de chargement indeterminee.
 pub const SWEEP: f32 = 1.5;
 
+/// Duree d'une onde partie du point d'appui.
+pub const RIPPLE: f32 = 0.45;
+
+/// Duree de l'entree en scene de l'accueil: logo, titre, recherche.
+pub const INTRO: f32 = 0.7;
+
 /// Avancement 0→1 de l'animation de survol d'un element.
 pub fn hover(ui: &Ui, id: Id, hovered: bool) -> f32 {
     ui.ctx().animate_bool_with_time(id, hovered, HOVER)
@@ -50,6 +56,12 @@ pub fn lerp(from: f32, to: f32, t: f32) -> f32 {
     from + (to - from) * t.clamp(0.0, 1.0)
 }
 
+/// Interpolation sans borne: un avancement au-dela de 1 (rebond) depasse la
+/// cible au lieu d'y etre ramene.
+pub fn lerp_unclamped(from: f32, to: f32, t: f32) -> f32 {
+    from + (to - from) * t
+}
+
 /// Couleur attenuee par un facteur d'opacite, pour les fondus croises.
 pub fn fade(color: Color32, alpha: f32) -> Color32 {
     color.gamma_multiply(alpha.clamp(0.0, 1.0))
@@ -60,6 +72,17 @@ pub fn fade(color: Color32, alpha: f32) -> Color32 {
 pub fn ease_out(t: f32) -> f32 {
     let t = 1.0 - t.clamp(0.0, 1.0);
     1.0 - t * t * t
+}
+
+/// Freinage avec depassement: l'element va un peu trop loin, puis revient se
+/// poser. C'est la courbe des apparitions de l'allure « Vivant ».
+///
+/// `overshoot` regle l'amplitude du depassement (1,7 est la valeur classique;
+/// 0 redonne un freinage cubique sans rebond).
+pub fn ease_out_back(t: f32, overshoot: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0) - 1.0;
+    let c3 = overshoot + 1.0;
+    1.0 + c3 * t * t * t + overshoot * t * t
 }
 
 /// Demarrage et arrivee amortis, pleine vitesse au milieu. C'est la courbe des
@@ -147,6 +170,77 @@ pub fn appear(ctx: &Context, id: Id, seconds: f32) -> f32 {
     ctx.animate_value_with_time(id, 1.0, seconds)
 }
 
+/// Valeur en route vers une cible: d'ou elle part, ou elle va, depuis quand.
+///
+/// Les animateurs d'egui interpolent lineairement; celui-ci suit une courbe au
+/// choix, ce qui permet a un indicateur de depasser sa cible et d'y revenir.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Glide {
+    from: f32,
+    to: f32,
+    start: f64,
+}
+
+impl Glide {
+    /// Immobile sur sa cible.
+    pub fn rest(value: f32, now: f64) -> Self {
+        Self {
+            from: value,
+            to: value,
+            start: now,
+        }
+    }
+
+    /// Position a un instant donne.
+    pub fn at(&self, now: f64, seconds: f32, curve: impl Fn(f32) -> f32) -> f32 {
+        let t = if seconds <= 0.0 {
+            1.0
+        } else {
+            ((now - self.start) as f32 / seconds).clamp(0.0, 1.0)
+        };
+        self.from + (self.to - self.from) * curve(t)
+    }
+
+    /// Nouvelle cible: le trajet repart de la position courante, sans saut.
+    pub fn retarget(
+        &self,
+        target: f32,
+        now: f64,
+        seconds: f32,
+        curve: impl Fn(f32) -> f32,
+    ) -> Self {
+        if (self.to - target).abs() < 0.01 {
+            return *self;
+        }
+        Self {
+            from: self.at(now, seconds, curve),
+            to: target,
+            start: now,
+        }
+    }
+
+    pub fn moving(&self, now: f64, seconds: f32) -> bool {
+        (self.to - self.from).abs() >= 0.01 && now - self.start < seconds as f64
+    }
+}
+
+/// Fait glisser une valeur vers sa cible en suivant `curve`.
+///
+/// La premiere fois qu'un identifiant est vu, la valeur est deja sur sa cible:
+/// un indicateur ne traverse pas l'ecran au demarrage.
+pub fn glide(ctx: &Context, id: Id, target: f32, seconds: f32, curve: impl Fn(f32) -> f32) -> f32 {
+    let now = ctx.input(|i| i.time);
+    let state = match ctx.data(|d| d.get_temp::<Glide>(id)) {
+        Some(previous) => previous.retarget(target, now, seconds, &curve),
+        None => Glide::rest(target, now),
+    };
+    ctx.data_mut(|d| d.insert_temp(id, state));
+    if state.moving(now, seconds) {
+        ctx.request_repaint();
+    }
+    state.at(now, seconds, curve)
+}
+
 /// Relance une transition quand la vue affichee change.
 ///
 /// Renvoie l'avancement 0→1 de la transition en cours. La cle identifie la vue:
@@ -224,6 +318,52 @@ mod tests {
             assert!((0.0..=1.0).contains(&ease_out(t)));
             assert!((0.0..=1.0).contains(&ease_in_out(t)));
         }
+    }
+
+    #[test]
+    fn ease_out_back_overshoots_then_settles() {
+        assert!(ease_out_back(0.0, 1.4).abs() < 1e-6);
+        assert!((ease_out_back(1.0, 1.4) - 1.0).abs() < 1e-6);
+        // Le rebond: la courbe passe au-dessus de l'arrivee avant de s'y poser.
+        let peak = (0..=100)
+            .map(|step| ease_out_back(step as f32 / 100.0, 1.4))
+            .fold(0.0_f32, f32::max);
+        assert!(peak > 1.02, "pas de depassement: {peak}");
+        // Sans depassement, la courbe ne sort jamais de [0, 1].
+        for step in 0..=20 {
+            let value = ease_out_back(step as f32 / 20.0, 0.0);
+            assert!((-1e-6..=1.0 + 1e-6).contains(&value), "{value}");
+        }
+    }
+
+    #[test]
+    fn glide_starts_from_where_it_is_when_retargeted() {
+        let linear = |t: f32| t;
+        let glide = Glide::rest(0.0, 0.0);
+        assert_eq!(glide.at(5.0, 1.0, linear), 0.0);
+
+        let going = glide.retarget(100.0, 1.0, 1.0, linear);
+        assert_eq!(going.at(1.0, 1.0, linear), 0.0);
+        assert!((going.at(1.5, 1.0, linear) - 50.0).abs() < 1e-3);
+        assert!(going.moving(1.5, 1.0));
+
+        // Demi-tour a mi-chemin: on repart de 50, pas de 0 ni de 100.
+        let back = going.retarget(0.0, 1.5, 1.0, linear);
+        assert!((back.at(1.5, 1.0, linear) - 50.0).abs() < 1e-3);
+        assert_eq!(back.at(9.0, 1.0, linear), 0.0);
+        assert!(!back.moving(9.0, 1.0));
+
+        // Une cible inchangee ne relance rien.
+        assert_eq!(back.retarget(0.0, 9.0, 1.0, linear), back);
+    }
+
+    #[test]
+    fn glide_does_not_travel_on_first_sight() {
+        let mut seen = Vec::new();
+        frames(&[0.0, 0.05], |ui| {
+            seen.push(glide(ui.ctx(), Id::new("essai"), 42.0, 0.2, ease_out));
+        });
+        assert_eq!(seen, vec![42.0, 42.0]);
     }
 
     #[test]

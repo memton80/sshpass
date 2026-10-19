@@ -173,7 +173,8 @@ impl<'a> Autocomplete<'a> {
             });
         }
 
-        let mut response = ui.add(
+        let mut response = crate::ui::widgets::field(
+            ui,
             egui::TextEdit::singleline(text)
                 .id(id)
                 .hint_text(self.hint)
@@ -234,12 +235,15 @@ impl<'a> Autocomplete<'a> {
             .align(RectAlign::BOTTOM_START)
             .gap(2.0)
             .width(width)
-            .frame(
+            .frame({
+                let look = crate::theme::look(&anchor.ctx);
                 egui::Frame::new()
                     .fill(palette.bg_deep)
                     .stroke(egui::Stroke::new(1.0, palette.border))
-                    .inner_margin(egui::Margin::same(2)),
-            )
+                    .corner_radius(look.medium)
+                    .shadow(anchor.ctx.global_style().visuals.popup_shadow)
+                    .inner_margin(egui::Margin::same(if look.pixel() { 2 } else { 4 }))
+            })
             .show(|ui| {
                 let mut chosen = None;
                 for (index, suggestion) in matches.iter().enumerate() {
@@ -270,7 +274,8 @@ impl<'a> Autocomplete<'a> {
             let painter = ui.painter();
             let background =
                 crate::ui::anim::lerp_color(palette.bg_deep, palette.accent_dim, highlight);
-            painter.rect_filled(rect, CornerRadius::ZERO, background);
+            let radius = crate::theme::look(ui.ctx()).small;
+            painter.rect_filled(rect, CornerRadius::same(radius), background);
             let icon_color =
                 crate::ui::anim::lerp_color(palette.text_dim, palette.accent_soft, highlight);
             pixel::draw(

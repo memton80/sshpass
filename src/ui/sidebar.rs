@@ -3,19 +3,62 @@
 use std::collections::HashSet;
 
 use egui::collapsing_header::CollapsingState;
-use egui::{Align2, CornerRadius, FontId, Frame, Margin, Rect, RichText, Sense, Vec2};
+use egui::{Align2, FontId, Frame, Margin, Rect, RichText, Sense, Vec2};
 
 use crate::app::{Action, SshpassApp};
 use crate::config::{Config, Connection};
-use crate::theme::Palette;
+use crate::theme::{self, Look, Palette};
+use crate::ui::widgets::{self, Button};
 use crate::ui::{self, anim, pixel};
 
 /// Hauteur d'une ligne de la liste.
 const ROW_HEIGHT: f32 = 26.0;
 
+/// Arrivee des lignes l'une apres l'autre.
+///
+/// La progression est commune a toute la liste, seul le rang change: chaque
+/// ligne demande la sienne a son tour, quel que soit le dossier ou elle est.
+/// Elle repart de zero quand la recherche change, pour que les resultats se
+/// posent au lieu d'apparaitre.
+struct Cascade {
+    progress: f32,
+    rank: usize,
+}
+
+impl Cascade {
+    fn new(ctx: &egui::Context, search: &str, look: &Look) -> Self {
+        let id = egui::Id::new("barre_cascade").with(search.trim());
+        Self {
+            progress: anim::appear(ctx, id, look.duration(0.45)),
+            rank: 0,
+        }
+    }
+
+    /// Avancement de la ligne suivante.
+    fn next(&mut self) -> f32 {
+        let arrival = anim::stagger(self.progress, self.rank, 0.05);
+        self.rank += 1;
+        arrival
+    }
+}
+
+/// Decalage et opacite d'une ligne qui arrive.
+fn arriving(
+    painter: &egui::Painter,
+    rect: Rect,
+    arrival: f32,
+    look: &Look,
+) -> (egui::Painter, Rect) {
+    let mut painter = painter.clone();
+    painter.multiply_opacity(arrival.clamp(0.0, 1.0));
+    let shift = anim::lerp_unclamped(-12.0, 0.0, look.arrive(arrival));
+    (painter, rect.translate(Vec2::new(shift, 0.0)))
+}
+
 pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
     let palette = app.palette;
     let scale = app.config.ui.pixel_scale as f32;
+    let look = theme::look(ui.ctx());
     let default_width = app.config.ui.sidebar_width;
     // Connexions deja ouvertes: elles portent une pastille dans la liste.
     let opened: HashSet<String> = app
@@ -35,12 +78,22 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
 
     egui::Panel::left("sidebar")
         .resizable(true)
+        .show_separator_line(look.pixel())
         .default_size(default_width)
         .size_range(210.0..=460.0)
         .frame(
+            // Dans les allures arrondies, le panneau est une carte posee sur le
+            // fond de la fenetre, a distance de ses bords.
             Frame::new()
                 .fill(palette.surface)
-                .inner_margin(Margin::same(8)),
+                .inner_margin(Margin::same(8))
+                .corner_radius(look.large)
+                .outer_margin(Margin {
+                    left: look.gap,
+                    right: 0,
+                    top: 0,
+                    bottom: look.gap,
+                }),
         )
         .show(ui, |ui| {
             search_row(ui, search, focus_search, &palette, scale);
@@ -50,13 +103,15 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                 .frame(Frame::new().inner_margin(Margin::symmetric(0, 6)))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        if ui::pixel_button(ui, &pixel::PLUS, "Connexion", &palette, scale)
+                        if ui
+                            .add(Button::new("Connexion").icon(&pixel::PLUS, scale).small())
                             .on_hover_text("Nouvelle connexion")
                             .clicked()
                         {
                             actions.push(Action::NewConnection(None));
                         }
-                        if ui::pixel_button(ui, &pixel::FOLDER, "Dossier", &palette, scale)
+                        if ui
+                            .add(Button::new("Dossier").icon(&pixel::FOLDER, scale).small())
                             .on_hover_text("Nouveau dossier")
                             .clicked()
                         {
@@ -69,6 +124,7 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     let needle = search.clone();
+                    let mut cascade = Cascade::new(ui.ctx(), &needle, &look);
 
                     let favorites: Vec<&Connection> = config
                         .connections
@@ -79,7 +135,14 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                         ui::section_title(ui, "Favoris", &palette);
                         for connection in favorites {
                             connection_row(
-                                ui, connection, config, &palette, scale, &opened, actions,
+                                ui,
+                                connection,
+                                config,
+                                &palette,
+                                scale,
+                                &opened,
+                                actions,
+                                &mut cascade,
                             );
                         }
                     }
@@ -128,6 +191,7 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                             scale,
                             &folder.id,
                             actions,
+                            cascade.next(),
                         );
                         if toggled {
                             if expanded_folders.contains(&folder.id) {
@@ -140,7 +204,14 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                             ui.indent(&folder.id, |ui| {
                                 for connection in children {
                                     connection_row(
-                                        ui, connection, config, &palette, scale, &opened, actions,
+                                        ui,
+                                        connection,
+                                        config,
+                                        &palette,
+                                        scale,
+                                        &opened,
+                                        actions,
+                                        &mut cascade,
                                     );
                                 }
                             });
@@ -156,7 +227,14 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
                         ui::section_title(ui, "Connexions", &palette);
                         for connection in orphans {
                             connection_row(
-                                ui, connection, config, &palette, scale, &opened, actions,
+                                ui,
+                                connection,
+                                config,
+                                &palette,
+                                scale,
+                                &opened,
+                                actions,
+                                &mut cascade,
                             );
                         }
                     }
@@ -182,7 +260,8 @@ fn search_row(
 ) {
     ui.horizontal(|ui| {
         pixel::icon(ui, &pixel::SEARCH, scale, palette.text_dim);
-        let response = ui.add(
+        let response = widgets::field(
+            ui,
             egui::TextEdit::singleline(search)
                 .hint_text("Rechercher (Ctrl+Maj+F)")
                 .desired_width(f32::INFINITY),
@@ -212,20 +291,24 @@ fn folder_row(
     scale: f32,
     folder_id: &str,
     actions: &mut Vec<Action>,
+    arrival: f32,
 ) -> bool {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
     let t = anim::hover(ui, response.id.with("hover"), response.hovered());
+    let look = theme::look(ui.ctx());
 
     if ui.is_rect_visible(rect) {
-        let painter = ui.painter();
+        let (painter, rect) = arriving(ui.painter(), rect, arrival, &look);
+        let painter = &painter;
         if t > 0.0 {
             painter.rect_filled(
                 rect,
-                CornerRadius::ZERO,
+                look.small,
                 anim::lerp_color(palette.surface, palette.surface_high, t),
             );
         }
+        widgets::ripple(ui, &response, rect, look.small, palette.accent_soft);
         let icon_y = rect.center().y - 4.0 * scale;
         // Deux sprites superposes en fondu croise: une rotation de chevron
         // serait floutee a chaque angle intermediaire, la ou un fondu reste
@@ -257,18 +340,42 @@ fn folder_row(
             palette.accent,
         );
         painter.text(
-            egui::pos2(rect.left() + 14.0 + 16.0 * scale, rect.center().y),
+            egui::pos2(
+                rect.left() + 14.0 + 16.0 * scale + look.lift * t,
+                rect.center().y,
+            ),
             Align2::LEFT_CENTER,
             name,
             FontId::proportional(13.0),
             palette.text,
         );
-        painter.text(
-            egui::pos2(rect.right() - 4.0, rect.center().y),
-            Align2::RIGHT_CENTER,
+        // Le compte devient une petite capsule hors retro.
+        let count_galley = painter.layout_no_wrap(
             count.to_string(),
             FontId::proportional(11.0),
             palette.text_dim,
+        );
+        let badge = Rect::from_min_size(
+            egui::pos2(
+                rect.right() - 6.0 - count_galley.size().x - 12.0,
+                rect.center().y - 8.0,
+            ),
+            Vec2::new(count_galley.size().x + 12.0, 16.0),
+        );
+        if !look.pixel() {
+            painter.rect_filled(
+                badge,
+                look.pill(badge.height()),
+                anim::lerp_color(palette.bg_deep, palette.accent_dim, t),
+            );
+        }
+        painter.galley(
+            egui::pos2(
+                badge.center().x - count_galley.size().x / 2.0,
+                badge.center().y - count_galley.size().y / 2.0,
+            ),
+            count_galley,
+            anim::lerp_color(palette.text_dim, palette.text, t),
         );
     }
 
@@ -286,6 +393,7 @@ fn folder_row(
     response.clicked()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn connection_row(
     ui: &mut egui::Ui,
     connection: &Connection,
@@ -294,10 +402,20 @@ fn connection_row(
     scale: f32,
     opened: &HashSet<String>,
     actions: &mut Vec<Action>,
+    cascade: &mut Cascade,
 ) {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_HEIGHT), Sense::click());
     let is_open = opened.contains(&connection.id);
+    let look = theme::look(ui.ctx());
+    let arrival = cascade.next();
+    // Le liseré d'onglet ouvert se deploie depuis le milieu de la ligne.
+    let marked = anim::toggle(
+        ui,
+        response.id.with("ouverte"),
+        is_open,
+        look.duration(anim::VIEW),
+    );
 
     // Actions rapides revelees au survol, a la place de la cible: une barre
     // laterale etroite n'a pas la place d'afficher les deux en permanence.
@@ -323,26 +441,42 @@ fn connection_row(
     let t = anim::hover(ui, response.id.with("hover"), hovered);
 
     if ui.is_rect_visible(rect) {
-        let painter = ui.painter();
+        let (painter, rect) = arriving(ui.painter(), rect, arrival, &look);
+        let painter = &painter;
         if t > 0.0 {
             painter.rect_filled(
                 rect,
-                CornerRadius::ZERO,
+                look.small,
                 anim::lerp_color(palette.surface, palette.surface_high, t),
             );
         }
-        if is_open {
+        widgets::ripple(ui, &response, rect, look.small, palette.accent_soft);
+        if marked > 0.0 {
             // Liseré gauche: la connexion a un onglet ouvert. Il s'epaissit au
-            // survol pour repondre au pointeur.
-            let marker = Rect::from_min_max(
-                rect.min,
-                egui::pos2(rect.left() + anim::lerp(2.0, 3.0, t) * scale, rect.bottom()),
+            // survol pour repondre au pointeur; hors retro, c'est une capsule
+            // qui grandit depuis le milieu de la ligne.
+            let width = anim::lerp(2.0, 3.0, t) * scale;
+            let marker = if look.pixel() {
+                Rect::from_min_max(rect.min, egui::pos2(rect.left() + width, rect.bottom()))
+            } else {
+                let height = (rect.height() - 8.0) * look.arrive(marked);
+                Rect::from_center_size(
+                    egui::pos2(rect.left() + width / 2.0 + 1.0, rect.center().y),
+                    Vec2::new(width, height.max(0.0)),
+                )
+            };
+            if look.glow {
+                painter.add(widgets::glow(marker, 2, palette.accent, 0.4 * marked));
+            }
+            painter.rect_filled(
+                marker,
+                look.pill(marker.width()),
+                anim::fade(palette.accent, marked),
             );
-            painter.rect_filled(marker, CornerRadius::ZERO, palette.accent);
         }
 
         let icon_y = rect.center().y - 4.0 * scale;
-        let icon_x = rect.left() + 4.0 + 2.0 * scale;
+        let icon_x = rect.left() + 4.0 + 2.0 * scale + look.lift * t;
         let (base_primary, secondary) = if connection.proton.is_some() {
             (palette.accent_soft, palette.success)
         } else {

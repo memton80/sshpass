@@ -48,7 +48,8 @@ leger, et suffisant pour une interface 2D.
   mutation de l'etat.
 * L'apparence par defaut d'`egui` doit etre entierement retravaillee
   (`theme.rs`): angles droits partout, palette violet/gris sombre, polices
-  systeme chargees via `fontdb`.
+  systeme chargees via `fontdb`. *Les angles droits sont devenus l'allure
+  « Retro », l'une des trois proposees: cf. ADR 0010.*
 * `egui` bouge vite entre versions mineures (la 0.35 a deplace les panneaux
   vers `Panel`, ancre dans un `Ui`, et remplace `App::update` par `App::ui`).
   Les versions sont donc epinglees dans `Cargo.toml`.

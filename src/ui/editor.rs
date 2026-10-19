@@ -15,6 +15,7 @@ use crate::pass::secret::{self, Secret};
 use crate::pass::{SshKeySource, SshKeyType};
 use crate::term::command;
 use crate::ui::modal::Modal;
+use crate::ui::widgets::{self, Button, Toggle};
 use crate::ui::{self, pixel};
 
 /// Etat de saisie. Les champs numeriques et les listes sont edites sous forme
@@ -253,7 +254,8 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                     .spacing([12.0, 8.0])
                     .show(ui, |ui| {
                         ui.label("Nom");
-                        ui.add(
+                        widgets::field(
+                            ui,
                             egui::TextEdit::singleline(&mut editor.connection.name)
                                 .hint_text("web-01")
                                 .desired_width(f32::INFINITY),
@@ -276,11 +278,12 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
 
                         ui.label("Port");
                         ui.horizontal(|ui| {
-                            ui.add(
+                            widgets::field(
+                                ui,
                                 egui::TextEdit::singleline(&mut editor.port_text).desired_width(70.0),
                             );
                             ui.add_space(12.0);
-                            ui.checkbox(&mut editor.connection.favorite, "Favori");
+                            ui.add(Toggle::new(&mut editor.connection.favorite, "Favori"));
                         });
                         ui.end_row();
 
@@ -307,7 +310,8 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                         ui.end_row();
 
                         ui.label("Tags");
-                        ui.add(
+                        widgets::field(
+                            ui,
                             egui::TextEdit::singleline(&mut editor.tags_text)
                                 .hint_text("prod, web")
                                 .desired_width(f32::INFINITY),
@@ -317,9 +321,15 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
 
                 ui::separator(ui, &palette);
                 ui::section_title(ui, "Authentification", &palette);
-                ui.horizontal(|ui| {
+                // Des puces plutot qu'un selecteur a segments: les libelles sont
+                // longs, et les puces passent a la ligne quand la place manque.
+                ui.horizontal_wrapped(|ui| {
                     for method in AuthMethod::ALL {
-                        ui.selectable_value(&mut editor.connection.auth, method, method.label());
+                        if widgets::chip(ui, editor.connection.auth == method, method.label())
+                            .clicked()
+                        {
+                            editor.connection.auth = method;
+                        }
                     }
                 });
                     // Le champ de mot de passe n'est montre que pour cette
@@ -333,13 +343,13 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                     let mut key = editor.connection.key_file.clone().unwrap_or_default();
                     ui.horizontal(|ui| {
                         ui.label("Cle privee");
-                        if ui
-                            .add(
-                                egui::TextEdit::singleline(&mut key)
-                                    .hint_text("~/.ssh/id_ed25519")
-                                    .desired_width(f32::INFINITY),
-                            )
-                            .changed()
+                        if widgets::field(
+                            ui,
+                            egui::TextEdit::singleline(&mut key)
+                                .hint_text("~/.ssh/id_ed25519")
+                                .desired_width(f32::INFINITY),
+                        )
+                        .changed()
                         {
                             editor.connection.key_file = Some(key);
                         }
@@ -388,7 +398,7 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                                 .show(ui, &mut editor.item_text, &palette, scale);
                             if !editor.vault_text.trim().is_empty()
                                 && ui
-                                    .small_button("Charger")
+                                    .add(Button::new("Charger").small())
                                     .on_hover_text("Lire le coffre pour alimenter les suggestions")
                                     .clicked()
                             {
@@ -398,7 +408,8 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                         ui.end_row();
 
                         ui.label("Champ");
-                        ui.add(
+                        widgets::field(
+                            ui,
                             egui::TextEdit::singleline(&mut editor.field_text)
                                 .hint_text("password (par defaut)")
                                 .desired_width(f32::INFINITY),
@@ -434,7 +445,8 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                     AuthMethod::Password => {
                         ui::section_title(ui, "Mot de passe", &palette);
                         ui.horizontal(|ui| {
-                            ui.add(
+                            widgets::field(
+                                ui,
                                 egui::TextEdit::singleline(&mut editor.password_text)
                                     .password(true)
                                     .hint_text("mot de passe du serveur")
@@ -448,7 +460,7 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                             let ready =
                                 blocker.is_none() && !writing && !editor.password_text.is_empty();
                             if ui
-                                .add_enabled(ready, egui::Button::new(label))
+                                .add_enabled(ready, Button::new(label).primary())
                                 .on_disabled_hover_text(blocker.clone().unwrap_or_else(|| {
                                     "Saisissez le mot de passe a ranger dans le coffre.".to_string()
                                 }))
@@ -540,7 +552,7 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                                 });
                             let ready = blocker.is_none() && !writing;
                             if ui
-                                .add_enabled(ready, egui::Button::new("Generer dans Proton Pass"))
+                                .add_enabled(ready, Button::new("Generer dans Proton Pass").primary())
                                 .on_hover_text(
                                     "La cle privee nait dans le coffre: elle ne touche pas le disque.",
                                 )
@@ -563,7 +575,7 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                             if ui
                                 .add_enabled(
                                     ready,
-                                    egui::Button::new(format!("Importer {key_file} dans Proton Pass")),
+                                    Button::new(format!("Importer {key_file} dans Proton Pass")),
                                 )
                                 .on_hover_text(
                                     "sshpass-gui ne lit pas le fichier: pass-cli en recoit le chemin.",
@@ -605,13 +617,13 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                         let mut remote = editor.connection.command.clone().unwrap_or_default();
                         ui.horizontal(|ui| {
                             ui.label("Commande");
-                            if ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut remote)
-                                        .hint_text("laisser vide pour un shell")
-                                        .desired_width(f32::INFINITY),
-                                )
-                                .changed()
+                            if widgets::field(
+                                ui,
+                                egui::TextEdit::singleline(&mut remote)
+                                    .hint_text("laisser vide pour un shell")
+                                    .desired_width(f32::INFINITY),
+                            )
+                            .changed()
                             {
                                 editor.connection.command = Some(remote);
                             }
@@ -622,7 +634,8 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                                 .size(11.0)
                                 .color(palette.text_dim),
                         );
-                        ui.add(
+                        widgets::field(
+                            ui,
                             egui::TextEdit::multiline(&mut editor.options_text)
                                 .hint_text("ServerAliveInterval=30")
                                 .desired_rows(2)
@@ -664,7 +677,7 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
 
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.button("Enregistrer").clicked() {
+                if ui.add(Button::new("Enregistrer").primary()).clicked() {
                     match editor.build() {
                         Ok(connection) => {
                             save = Some(connection);
@@ -673,15 +686,12 @@ pub fn show(app: &mut SshpassApp, ctx: &egui::Context) {
                         Err(message) => editor.error = Some(message),
                     }
                 }
-                if ui.button("Annuler").clicked() {
+                if ui.add(Button::new("Annuler")).clicked() {
                     close = true;
                 }
                 if !editor.is_new {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button(RichText::new("Supprimer").color(palette.danger))
-                            .clicked()
-                        {
+                        if ui.add(Button::new("Supprimer").danger()).clicked() {
                             delete = Some(editor.connection.id.clone());
                             close = true;
                         }
@@ -805,7 +815,7 @@ fn write_status(
 ) {
     if writing {
         ui.horizontal(|ui| {
-            pixel::loader(ui, scale, palette.accent);
+            widgets::loader(ui, scale, palette.accent);
             ui::hint(ui, "Ecriture dans Proton Pass...", palette);
         });
         return;

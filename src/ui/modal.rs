@@ -6,7 +6,8 @@
 //! 14 points. Elles sont donc construites ici, une seule fois.
 //!
 //! L'ouverture est facile: egui fait deja le fondu d'entree d'une `Area`, on y
-//! ajoute une legere montee en echelle.
+//! ajoute une montee en echelle — avec un leger rebond dans l'allure
+//! « Vivant » — et, hors retro, un voile qui assombrit le reste de l'ecran.
 //!
 //! La fermeture, elle, demande un detour. En mode immediat, une fenetre
 //! disparait parce que l'etat qui la decrivait n'existe plus — la fiche de
@@ -20,12 +21,12 @@ use std::collections::HashMap;
 
 use egui::emath::TSTransform;
 use egui::{
-    Align2, Context, CornerRadius, FontId, Frame, Id, InnerResponse, LayerId, Margin, Order, Rect,
-    Ui, Vec2,
+    Align2, Color32, Context, CornerRadius, FontId, Frame, Id, InnerResponse, LayerId, Margin,
+    Order, Rect, Ui, Vec2,
 };
 
-use crate::theme::Palette;
-use crate::ui::{anim, pixel};
+use crate::theme::{self, Look, Palette};
+use crate::ui::{anim, widgets};
 
 /// Ce qui reste d'une fenetre une fois qu'elle n'est plus dessinee.
 #[derive(Clone)]
@@ -83,7 +84,18 @@ impl<'a> Modal<'a> {
     ) -> Option<InnerResponse<Option<R>>> {
         let Self { title, open, width } = self;
         let id = Id::new(("modale", title));
-        let progress = anim::ease_out(anim::appear(ctx, id.with("apparition"), anim::MODAL));
+        let look = theme::look(ctx);
+        let progress = anim::appear(ctx, id.with("apparition"), look.duration(anim::MODAL));
+        // Le voile est peint dans le calque meme de la fenetre, avant elle:
+        // il passe ainsi sous la fenetre et par-dessus les panneaux, quel que
+        // soit l'ordre des autres calques.
+        backdrop(
+            ctx,
+            &ctx.layer_painter(LayerId::new(Order::Middle, id)),
+            progress,
+            &look,
+        );
+        let progress = look.arrive(progress);
 
         let mut window = egui::Window::new(title)
             .id(id)
@@ -108,21 +120,48 @@ impl<'a> Modal<'a> {
 
         if let Some(response) = &response {
             let rect = response.response.rect;
-            // Montee en echelle depuis le centre. `transform_layer_shapes` ne
-            // vaut que pour la frame en cours et ne touche pas aux entrees: la
-            // fenetre se pose sans jamais decaler ses zones cliquables.
-            if progress < 1.0 {
-                let scaling = anim::lerp(0.96, 1.0, progress);
+            // Montee en echelle depuis le centre, et montee tout court hors
+            // retro. `transform_layer_shapes` ne vaut que pour la frame en
+            // cours et ne touche pas aux entrees: la fenetre se pose sans
+            // jamais decaler ses zones cliquables.
+            if (progress - 1.0).abs() > 1e-4 {
+                let (from, rise) = if look.pixel() {
+                    (0.96, 0.0)
+                } else {
+                    (0.9, 16.0)
+                };
+                let scaling = anim::lerp_unclamped(from, 1.0, progress);
+                let lift = anim::lerp_unclamped(rise, 0.0, progress);
                 let pivot = rect.center().to_vec2();
                 ctx.transform_layer_shapes(
                     response.response.layer_id,
-                    TSTransform::new(pivot * (1.0 - scaling), scaling),
+                    TSTransform::new(pivot * (1.0 - scaling) + Vec2::new(0.0, lift), scaling),
                 );
+                ctx.request_repaint();
             }
             track(ctx, id, title, rect);
         }
         response
     }
+}
+
+/// Voile qui assombrit l'ecran derriere une fenetre ouverte, pour un
+/// avancement donne. Rien en retro, qui garde l'allure d'origine.
+///
+/// Le voile ne bloque pas les clics: comme avant, le panneau Proton Pass reste
+/// utilisable pendant qu'une fiche est ouverte. Il ne fait qu'eloigner le reste.
+fn backdrop(ctx: &Context, painter: &egui::Painter, progress: f32, look: &Look) {
+    if look.pixel() || progress <= 0.0 {
+        return;
+    }
+    // Plus grand que l'ecran: la fenetre et lui partagent un calque, que la
+    // montee en echelle reduit le temps de l'ouverture.
+    let screen = ctx.content_rect();
+    painter.rect_filled(
+        screen.expand(screen.width().max(screen.height()) * 0.15),
+        CornerRadius::ZERO,
+        Color32::from_black_alpha((90.0 * progress.clamp(0.0, 1.0)) as u8),
+    );
 }
 
 /// Note qu'une fenetre est bien la, a cette place, a cette passe de rendu.
@@ -161,7 +200,8 @@ pub fn fade_out_closed(ctx: &Context, palette: &Palette) {
             continue;
         }
         let gone_at = *trace.gone_at.get_or_insert(now);
-        let progress = ((now - gone_at) as f32 / anim::MODAL).clamp(0.0, 1.0);
+        let duration = theme::look(ctx).duration(anim::MODAL);
+        let progress = ((now - gone_at) as f32 / duration).clamp(0.0, 1.0);
         if progress >= 1.0 {
             // Fondu termine: la trace n'a plus de raison d'etre.
             continue;
@@ -181,13 +221,21 @@ fn paint(ctx: &Context, palette: &Palette, id: Id, trace: &Trace, progress: f32)
         trace.rect.size() * anim::lerp(1.0, 0.96, eased),
     );
 
+    let look = theme::look(ctx);
     let painter = ctx.layer_painter(LayerId::new(Order::Foreground, id.with("trace")));
+    backdrop(ctx, &painter, alpha, &look);
     painter.rect_filled(
         rect,
-        CornerRadius::ZERO,
+        CornerRadius::same(look.large),
         anim::fade(palette.surface, alpha * 0.9),
     );
-    pixel::frame(&painter, rect, anim::fade(palette.border, alpha), 1.0);
+    widgets::outline(
+        &painter,
+        rect,
+        look.large,
+        anim::fade(palette.border, alpha),
+        &look,
+    );
     painter.text(
         egui::pos2(rect.left() + 14.0, rect.top() + 12.0),
         Align2::LEFT_TOP,
@@ -245,7 +293,8 @@ mod tests {
         assert!(has_trace(&ctx), "fermeture sans animation de sortie");
 
         // Une fois le fondu termine, plus rien n'est dessine ni retenu.
-        let _ = ctx.run_ui(input(0.04 + anim::MODAL as f64 + 0.01), |ui| {
+        let duration = theme::look(&ctx).duration(anim::MODAL) as f64;
+        let _ = ctx.run_ui(input(0.04 + duration + 0.01), |ui| {
             fade_out_closed(&ui.ctx().clone(), &palette)
         });
         assert!(!has_trace(&ctx), "trace jamais oubliee");

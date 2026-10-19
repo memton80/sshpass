@@ -18,7 +18,7 @@ use crate::ui;
 /// affiche soit celui reellement applique.
 pub const AGENT_WAIT_TIMEOUT: f64 = 20.0;
 /// Duree d'affichage d'une notification.
-const TOAST_DURATION: f64 = 5.0;
+pub const TOAST_DURATION: f64 = 5.0;
 /// Intervalle entre deux verifications spontanees de la session Proton Pass.
 ///
 /// Une session expire sans prevenir personne. Sans cette ronde, l'application
@@ -266,7 +266,12 @@ pub struct SshpassApp {
 impl SshpassApp {
     pub fn new(cc: &eframe::CreationContext<'_>, config: Config) -> Self {
         theme::install_system_fonts(&cc.egui_ctx);
-        theme::apply(&cc.egui_ctx, &theme::DARK, config.ui.font_size);
+        theme::apply(
+            &cc.egui_ctx,
+            &theme::DARK,
+            config.ui.font_size,
+            config.ui.style,
+        );
 
         // Une session ferme son script askpass en partant; un plantage, non.
         crate::pass::sweep_stale_askpass_scripts();
@@ -1145,6 +1150,14 @@ impl eframe::App for SshpassApp {
         self.advance_waiting_tabs(&ctx, now);
         self.prune_toasts(now);
         self.handle_shortcuts(&ctx);
+
+        // Le fond de la fenetre. Les panneaux le recouvrent en retro; dans les
+        // allures arrondies, ils s'en detachent comme des cartes.
+        ui.painter().rect_filled(
+            ctx.content_rect(),
+            egui::CornerRadius::ZERO,
+            self.palette.bg_deep,
+        );
 
         // Les panneaux se posent dans l'ordre: barres, puis zone centrale.
         ui::toolbar::show(self, ui);

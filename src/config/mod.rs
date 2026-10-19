@@ -126,6 +126,8 @@ pub struct UiConfig {
     pub scrollback_lines: usize,
     /// Facteur d'echelle des sprites pixel art (entier, pour rester net).
     pub pixel_scale: u32,
+    /// Allure de l'interface: formes et mouvements (cf. `theme::Look`).
+    pub style: UiStyle,
 }
 
 impl Default for UiConfig {
@@ -136,6 +138,41 @@ impl Default for UiConfig {
             sidebar_width: 260.0,
             scrollback_lines: 10_000,
             pixel_scale: 2,
+            style: UiStyle::default(),
+        }
+    }
+}
+
+/// Allure de l'interface. Les couleurs ne changent pas d'une allure a
+/// l'autre: seuls les arrondis, les volumes et le caractere des animations.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UiStyle {
+    /// Arrondis genereux, rebonds, ondes au clic et halos.
+    #[default]
+    Lively,
+    /// Arrondis discrets et transitions sans rebond.
+    Soft,
+    /// Angles droits et liseres pixel art: l'allure d'origine.
+    Retro,
+}
+
+impl UiStyle {
+    pub const ALL: [UiStyle; 3] = [UiStyle::Lively, UiStyle::Soft, UiStyle::Retro];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UiStyle::Lively => "Vivant",
+            UiStyle::Soft => "Doux",
+            UiStyle::Retro => "Retro",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            UiStyle::Lively => "Arrondis genereux, rebonds, ondes au clic, halos.",
+            UiStyle::Soft => "Arrondis discrets, fondus et glissements sans rebond.",
+            UiStyle::Retro => "Angles droits et liseres pixel art, comme a l'origine.",
         }
     }
 }
@@ -903,6 +940,22 @@ mod tests {
         // section: elle doit retomber sur les valeurs fermees.
         let old: Config = toml::from_str("version = 1\n").expect("deserialisation");
         assert!(!old.security.remote_clipboard_read);
+    }
+
+    #[test]
+    fn ui_style_is_written_by_name_and_defaults_to_lively() {
+        let mut config = Config::default();
+        config.ui.style = UiStyle::Retro;
+        let text = toml::to_string_pretty(&config).expect("serialisation");
+        assert!(text.contains("style = \"retro\""), "{text}");
+        let parsed: Config = toml::from_str(&text).expect("deserialisation");
+        assert_eq!(parsed.ui.style, UiStyle::Retro);
+
+        // Une configuration anterieure n'a pas le champ: elle prend l'allure
+        // par defaut sans erreur de lecture.
+        let old: Config =
+            toml::from_str("version = 1\n[ui]\nfont_size = 15.0\n").expect("deserialisation");
+        assert_eq!(old.ui.style, UiStyle::Lively);
     }
 
     #[cfg(unix)]

@@ -1,5 +1,43 @@
 # Journal des versions
 
+## A paraitre
+
+### Des bords ronds, et une interface qui repond
+
+L'interface s'arrondit et bouge a chaque geste. Comme le gout ne se discute pas
+sur description, elle vient en **trois allures**, a essayer dans **Reglages →
+Allure** — le changement s'applique tout de suite:
+
+* **Vivant**, l'allure par defaut: arrondis genereux, panneaux detaches du
+  fond comme des cartes, elements qui arrivent avec un leger rebond, onde qui
+  part du point ou l'on clique, halo violet autour de ce qui est actif.
+* **Doux**: les memes arrondis, plus discrets, et des transitions sans rebond.
+* **Retro**: les angles droits et les liseres pixel art d'origine.
+
+Dans les trois, il se passe quelque chose a chaque action:
+
+* le soulignement de l'onglet courant **glisse** d'un onglet a l'autre, et un
+  nouvel onglet s'ouvre en s'elargissant;
+* les fenetres s'ouvrent en montant, sur un voile qui assombrit le reste de
+  l'ecran;
+* les cases a cocher deviennent des **interrupteurs**, la methode
+  d'authentification se choisit avec des puces;
+* les lignes de la barre laterale arrivent l'une apres l'autre, au demarrage
+  et a chaque recherche;
+* l'accueil entre en scene — le logo tombe a sa place, le titre monte — et
+  ses cartes se soulevent au survol;
+* les notifications portent une jauge du temps qui leur reste;
+* une connexion qui s'etablit fait battre sa pastille d'une onde.
+
+Rien ne tourne au repos: comme avant, une animation ne dure que le temps d'un
+geste ou d'une attente reelle.
+
+Au passage, les reglages, qui ne tenaient plus sur un petit ecran, defilent
+desormais, et le bouton « Coffre » s'allume quand le panneau est ouvert au lieu
+de changer de libelle.
+
+Le detail est dans [ADR 0010](docs/adr/0010-allures-arrondies-et-animations.md).
+
 ## 1.2.0 — 10 septembre 2026
 
 ### Ce que le serveur ne peut plus vous prendre

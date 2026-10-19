@@ -5,7 +5,9 @@ use egui::{ComboBox, Frame, Margin, RichText};
 use crate::app::{Action, PassStatus, SshpassApp};
 use crate::config::AgentMode;
 use crate::pass::AgentState;
-use crate::ui::{self, pixel};
+use crate::theme;
+use crate::ui::widgets::{self, Button};
+use crate::ui::{self, anim, pixel};
 
 /// Affiche le panneau, en le faisant glisser a l'ouverture et a la fermeture.
 ///
@@ -19,22 +21,32 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
     // `show_collapsible` emprunte le booleen: on travaille sur une copie, que
     // l'on recopie ensuite dans l'application.
     let mut expanded = app.show_vault_panel;
+    let look = theme::look(ui.ctx());
 
     egui::Panel::right("vault_panel")
         .resizable(true)
+        .show_separator_line(look.pixel())
         .default_size(300.0)
         .size_range(240.0..=460.0)
         .frame(
+            // Carte posee sur le fond hors retro, comme la barre laterale.
             Frame::new()
                 .fill(palette.surface)
-                .inner_margin(Margin::same(10)),
+                .inner_margin(Margin::same(10))
+                .corner_radius(look.large)
+                .outer_margin(Margin {
+                    left: 0,
+                    right: look.gap,
+                    top: 0,
+                    bottom: look.gap,
+                }),
         )
         .show_collapsible(ui, &mut expanded, |ui| {
             ui.horizontal(|ui| {
                 pixel::icon_two_tone(ui, &pixel::KEY, scale, palette.accent_soft, palette.success);
                 ui.label(RichText::new("Proton Pass").strong().size(14.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Actualiser").clicked() {
+                    if ui.add(Button::new("Actualiser").small()).clicked() {
                         app.actions.push(Action::RefreshVaults);
                     }
                 });
@@ -61,7 +73,7 @@ fn session_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
 
     if app.login.is_running() {
         ui.horizontal(|ui| {
-            pixel::loader(ui, app.config.ui.pixel_scale as f32, palette.accent);
+            widgets::loader(ui, app.config.ui.pixel_scale as f32, palette.accent);
             ui::hint(ui, "Reconnexion a Proton Pass...", &palette);
         });
         match app.login.state().url() {
@@ -70,7 +82,7 @@ fn session_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
                 ui::hint(ui, "Terminez la connexion dans le navigateur.", &palette);
                 ui.horizontal(|ui| {
                     if ui
-                        .small_button("Copier le lien")
+                        .add(Button::new("Copier le lien").small().primary())
                         .on_hover_text(&url)
                         .clicked()
                     {
@@ -80,7 +92,7 @@ fn session_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
                             crate::app::ToastKind::Info,
                         ));
                     }
-                    if ui.small_button("Annuler").clicked() {
+                    if ui.add(Button::new("Annuler").small()).clicked() {
                         app.login.cancel();
                     }
                 });
@@ -101,7 +113,7 @@ fn session_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
         }
         PassStatus::Probing => {
             ui.horizontal(|ui| {
-                pixel::loader(ui, app.config.ui.pixel_scale as f32, palette.accent_soft);
+                widgets::loader(ui, app.config.ui.pixel_scale as f32, palette.accent_soft);
                 ui::hint(ui, "Verification de la session...", &palette);
             });
         }
@@ -114,7 +126,7 @@ fn session_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
             );
             ui.label(RichText::new(detail).color(palette.text_dim).size(10.0));
             if ui
-                .button("Se reconnecter")
+                .add(Button::new("Se reconnecter").primary())
                 .on_hover_text("Lance `pass-cli login` et ouvre le lien d'authentification")
                 .clicked()
             {
@@ -207,22 +219,25 @@ fn agents_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
             },
         };
         ui.horizontal(|ui| {
-            pixel::status_dot(ui, color, scale, &tooltip);
+            let dot = widgets::status_dot(ui, color, scale, &tooltip);
+            if matches!(state, AgentState::Starting) {
+                widgets::ping(ui, dot.rect, color, scale);
+            }
             ui.label(RichText::new(&vault).size(12.0));
             ui.with_layout(
                 egui::Layout::right_to_left(egui::Align::Center),
                 |ui| match mode {
                     AgentMode::OwnAgent => {
                         if state.is_running() || matches!(state, AgentState::Starting) {
-                            if ui.small_button("Arreter").clicked() {
+                            if ui.add(Button::new("Arreter").small().danger()).clicked() {
                                 app.actions.push(Action::StopAgent(vault.clone()));
                             }
-                        } else if ui.small_button("Demarrer").clicked() {
+                        } else if ui.add(Button::new("Demarrer").small().primary()).clicked() {
                             app.actions.push(Action::StartAgent(vault.clone()));
                         }
                     }
                     AgentMode::LoadIntoExisting => {
-                        if ui.small_button("Charger les cles").clicked() {
+                        if ui.add(Button::new("Charger les cles").small()).clicked() {
                             app.actions
                                 .push(Action::LoadIntoExistingAgent(vault.clone()));
                         }
@@ -281,7 +296,8 @@ fn items_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         pixel::icon(ui, &pixel::SEARCH, scale, palette.text_dim);
-        ui.add(
+        widgets::field(
+            ui,
             egui::TextEdit::singleline(&mut app.vault_search)
                 .hint_text("Filtrer les items")
                 .desired_width(f32::INFINITY),
@@ -290,7 +306,7 @@ fn items_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
 
     if app.loading_items.contains(&chosen) {
         ui.horizontal(|ui| {
-            pixel::loader(ui, app.config.ui.pixel_scale as f32, palette.accent_soft);
+            widgets::loader(ui, app.config.ui.pixel_scale as f32, palette.accent_soft);
             ui::hint(ui, "Lecture du coffre...", &palette);
         });
         return;
@@ -298,7 +314,7 @@ fn items_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
 
     let Some(items) = app.items.get(&chosen).cloned() else {
         ui.add_space(6.0);
-        if ui.button("Charger les items").clicked() {
+        if ui.add(Button::new("Charger les items").primary()).clicked() {
             app.actions.push(Action::LoadItems(chosen.clone()));
         }
         return;
@@ -322,14 +338,34 @@ fn items_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
         return;
     }
 
+    let look = theme::look(ui.ctx());
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for item in matching {
-                Frame::new()
-                    .fill(palette.bg)
-                    .inner_margin(Margin::same(6))
-                    .show(ui, |ui| {
+            for (rank, item) in matching.into_iter().enumerate() {
+                // Les items se posent l'un apres l'autre a l'ouverture d'un
+                // coffre, et s'eclairent au survol.
+                let id = egui::Id::new(("item", &chosen, &item.title));
+                let listing = anim::appear(
+                    ui.ctx(),
+                    egui::Id::new(("items", &chosen)),
+                    look.duration(0.45),
+                );
+                let arrival = anim::stagger(listing, rank, 0.05);
+                let hovered = anim::hover(
+                    ui,
+                    id.with("survol"),
+                    ui.ctx()
+                        .data(|d| d.get_temp::<bool>(id.with("dessus")))
+                        .unwrap_or(false),
+                );
+                let card = Frame::new()
+                    .fill(anim::lerp_color(palette.bg, palette.surface_high, hovered))
+                    .corner_radius(look.medium)
+                    .inner_margin(Margin::same(8));
+                let response = ui.scope(|ui| {
+                    ui.multiply_opacity(arrival.clamp(0.0, 1.0));
+                    card.show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let sprite = if item.kind.is_ssh_key() {
                                 pixel::KEY
@@ -355,7 +391,7 @@ fn items_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         if ui
-                                            .small_button("Associer")
+                                            .add(Button::new("Associer").small())
                                             .on_hover_text(format!("Associer a « {name} »"))
                                             .clicked()
                                         {
@@ -369,7 +405,21 @@ fn items_section(app: &mut SshpassApp, ui: &mut egui::Ui) {
                                 );
                             }
                         });
-                    });
+                    })
+                    .response
+                });
+                let over = response.inner.contains_pointer();
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(id.with("dessus"), over));
+                if !look.pixel() && hovered > 0.0 {
+                    widgets::outline(
+                        ui.painter(),
+                        response.inner.rect,
+                        look.medium,
+                        anim::fade(palette.accent, hovered),
+                        &look,
+                    );
+                }
                 ui.add_space(4.0);
             }
         });

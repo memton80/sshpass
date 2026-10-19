@@ -43,8 +43,12 @@ Journal des versions : [CHANGELOG.md](CHANGELOG.md).
   pendant qu'une connexion SSH s'etablit, notifications qui entrent et sortent
   par le bord — le tout avec les animateurs natifs d'egui (aucune dependance
   ajoutee) — voir [ADR 0005](docs/adr/0005-animations-et-autocompletion.md).
-* **Theme sombre violet/gris**, habillage pixel art dessine (icones, bordures,
-  pastilles, curseur), texte en **police systeme**.
+* **Trois allures**, au choix dans **Reglages → Allure** et appliquees en
+  direct : *Vivant* (arrondis genereux, rebonds, ondes au clic, halos), *Doux*
+  (arrondis discrets, transitions sans rebond) et *Retro* (angles droits et
+  liseres pixel art) — voir [ADR 0010](docs/adr/0010-allures-arrondies-et-animations.md).
+* **Theme sombre violet/gris**, icones pixel art dessinees, texte en
+  **police systeme**.
 
 ## Pile technique
 
