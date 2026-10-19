@@ -24,8 +24,8 @@ Dans les trois, il se passe quelque chose a chaque action:
   d'authentification se choisit avec des puces;
 * les lignes de la barre laterale arrivent l'une apres l'autre, au demarrage
   et a chaque recherche;
-* l'accueil entre en scene — le logo tombe a sa place, le titre monte — et
-  ses cartes se soulevent au survol;
+* l'accueil entre en scene — le titre et la recherche montent a leur place —
+  et ses cartes se soulevent au survol;
 * les notifications portent une jauge du temps qui leur reste;
 * une connexion qui s'etablit fait battre sa pastille d'une onde.
 

@@ -91,8 +91,10 @@ ouvert —, a l'indicateur du selecteur et au bouton de l'interrupteur.
   s'ecartent; la croix de fermeture pousse un disque rouge.
 * **Barre laterale** — les lignes arrivent l'une apres l'autre au demarrage et
   a chaque recherche; le lisere d'onglet ouvert grandit depuis le milieu.
-* **Accueil** — le logo tombe a sa place et se souleve au survol, le titre et
-  le sous-titre montent, les cartes se soulevent avec leur ombre.
+* **Accueil** — le titre et le sous-titre montent, les cartes se soulevent
+  avec leur ombre. Le logo, lui, reste immobile: une premiere version le
+  faisait tomber a sa place et se soulever au survol, et l'effet a ete juge
+  disgracieux.
 * **Notifications** — entree avec rebond, jauge de vie qui se vide.
 
 ## Ce qui n'a pas change

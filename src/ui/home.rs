@@ -16,9 +16,9 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
     let scale = app.config.ui.pixel_scale as f32;
     let look = theme::look(ui.ctx());
 
-    // Entree en scene: logo, titre, sous-titre et recherche se posent l'un
-    // apres l'autre. Elle se rejoue a chaque retour sur l'accueil, et ne coute
-    // rien une fois terminee.
+    // Entree en scene: titre, sous-titre et recherche se posent l'un apres
+    // l'autre — le logo, lui, est deja la. Elle se rejoue a chaque retour sur
+    // l'accueil, et ne coute rien une fois terminee.
     let intro = anim::appear(
         ui.ctx(),
         egui::Id::new("accueil_intro"),
@@ -28,7 +28,7 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
 
     ui.vertical_centered(|ui| {
         ui.add_space(48.0);
-        logo(ui, &palette, scale, step(0));
+        logo(ui, &palette, scale);
 
         ui.add_space(12.0);
         rising_text(
@@ -36,20 +36,20 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
             "sshpass-gui",
             FontId::proportional(26.0),
             palette.text,
-            step(1),
+            step(0),
         );
         rising_text(
             ui,
             "Connexions SSH et secrets Proton Pass",
             FontId::proportional(13.0),
             palette.text_dim,
-            step(2),
+            step(1),
         );
         ui.add_space(24.0);
 
         ui.allocate_ui_with_layout(Vec2::new(460.0, 0.0), Layout::top_down(Align::Min), |ui| {
             ui.scope(|ui| {
-                ui.multiply_opacity(step(3).clamp(0.0, 1.0));
+                ui.multiply_opacity(step(2).clamp(0.0, 1.0));
                 ui.horizontal(|ui| {
                     pixel::icon(ui, &pixel::SEARCH, scale, palette.text_dim);
                     let response = widgets::field(
@@ -77,28 +77,26 @@ pub fn show(app: &mut SshpassApp, ui: &mut egui::Ui) {
     });
 }
 
-/// Logo de l'accueil: il tombe a sa place, puis se souleve au survol. Hors
-/// retro, un halo violet l'eclaire par en dessous.
-fn logo(ui: &mut egui::Ui, palette: &theme::Palette, scale: f32, arrival: f32) {
+/// Logo de l'accueil. Il ne bouge pas: ni chute a l'arrivee, ni reaction au
+/// survol. Hors retro, un halo violet fixe l'eclaire par en dessous.
+fn logo(ui: &mut egui::Ui, palette: &theme::Palette, scale: f32) {
     let look = theme::look(ui.ctx());
     let logo_scale = scale * 3.0;
-    let (rect, response) = ui.allocate_exact_size(pixel::TERMINAL.size(logo_scale), Sense::hover());
-    let hover = anim::hover(ui, response.id.with("survol"), response.hovered());
-    let drop = anim::lerp_unclamped(-24.0, 0.0, look.arrive(arrival));
-    let rise = look.lift * 2.0 * look.arrive(hover);
-    let rect = rect.translate(Vec2::new(0.0, drop - rise));
-    let mut painter = ui.painter().clone();
-    painter.multiply_opacity(arrival.clamp(0.0, 1.0));
+    let (rect, _) = ui.allocate_exact_size(pixel::TERMINAL.size(logo_scale), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter();
     if look.glow {
         painter.add(widgets::glow(
             rect.shrink(2.0),
             (rect.width() / 2.0) as u8,
             palette.accent,
-            1.2 + 0.6 * hover,
+            1.2,
         ));
     }
     pixel::draw(
-        &painter,
+        painter,
         rect.min,
         &pixel::TERMINAL,
         logo_scale,
