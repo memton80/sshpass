@@ -1,6 +1,6 @@
 # Journal des versions
 
-## A paraitre
+## 1.3.0 — 19 octobre 2026
 
 ### Des bords ronds, et une interface qui repond
 
