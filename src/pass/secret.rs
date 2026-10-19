@@ -263,7 +263,12 @@ mod tests {
     fn secret_never_prints_its_value() {
         let secret = Secret::new("hunter2");
         let rendered = format!("{secret:?}");
-        assert!(!rendered.contains("hunter2"), "fuite: {rendered}");
+        // Le message d'echec ne reprend pas le rendu: s'il fuyait, il
+        // recopierait le secret dans la sortie des tests.
+        assert!(
+            !rendered.contains("hunter2"),
+            "le rendu Debug laisse passer la valeur"
+        );
         assert!(rendered.contains("masques"));
         assert_eq!(secret.expose(), "hunter2");
     }

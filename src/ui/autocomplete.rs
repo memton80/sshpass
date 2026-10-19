@@ -106,7 +106,9 @@ pub fn previous_index(current: usize, len: usize) -> usize {
 
 /// Champ de saisie avec liste de suggestions.
 pub struct Autocomplete<'a> {
-    salt: &'a str,
+    /// Identifiant egui du champ (le « id salt » d'egui), rien de
+    /// cryptographique.
+    id_salt: &'a str,
     hint: &'a str,
     width: f32,
     icon: &'a Sprite,
@@ -114,9 +116,9 @@ pub struct Autocomplete<'a> {
 }
 
 impl<'a> Autocomplete<'a> {
-    pub fn new(salt: &'a str, candidates: &'a [Suggestion]) -> Self {
+    pub fn new(id_salt: &'a str, candidates: &'a [Suggestion]) -> Self {
         Self {
-            salt,
+            id_salt,
             hint: "",
             width: f32::INFINITY,
             icon: &pixel::CHEVRON_RIGHT,
@@ -146,7 +148,7 @@ impl<'a> Autocomplete<'a> {
         palette: &Palette,
         scale: f32,
     ) -> egui::Response {
-        let id = ui.make_persistent_id(self.salt);
+        let id = ui.make_persistent_id(self.id_salt);
         let mut state: State = ui.ctx().data(|d| d.get_temp(id)).unwrap_or_default();
         let focused = ui.memory(|m| m.has_focus(id));
 
