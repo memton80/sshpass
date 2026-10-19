@@ -38,6 +38,17 @@ de changer de libelle.
 
 Le detail est dans [ADR 0010](docs/adr/0010-allures-arrondies-et-animations.md).
 
+### Fermer un onglet ne fige plus l'application
+
+Fermer un onglet envoie le signal de raccrochage (SIGHUP) a son shell, qui
+arrete ce qu'il a lance — un `ping` en cours, par exemple — puis se termine.
+Mais si le shell ignorait ce signal (`trap '' HUP`, `exec nohup ...`),
+l'application attendait sa fin indefiniment, et toute la fenetre se figeait.
+
+La fermeture se fait desormais a part, et un shell encore la au bout d'une
+seconde est arrete de force. Ce qui ignore le signal et a ete lance depuis la
+session survit, comme apres `nohup` — le comportement de tout terminal.
+
 ## 1.2.0 — 10 septembre 2026
 
 ### Ce que le serveur ne peut plus vous prendre

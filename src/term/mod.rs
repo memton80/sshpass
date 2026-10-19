@@ -13,7 +13,7 @@ pub mod render;
 
 use std::borrow::Cow;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -37,6 +37,11 @@ use crate::term::command::CommandSpec;
 /// delai, l'animation de l'onglet n'apprend plus rien a personne et ne ferait
 /// que reclamer une frame toutes les seize millisecondes.
 const CONNECTING_HINT: Duration = Duration::from_secs(45);
+
+/// Delai laisse au processus d'une session pour se terminer de lui-meme apres
+/// le SIGHUP de la fermeture. Un shell ou un `ssh` part en quelques
+/// millisecondes; au-dela, il ignore le signal et il est tue.
+const HANGUP_GRACE: Duration = Duration::from_secs(1);
 
 /// Dimensions de la grille, exprimees en cellules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +159,8 @@ pub struct TerminalSession {
     sender: EventLoopSender,
     events: Receiver<TermEvent>,
     loop_handle: Option<JoinHandle<(EventLoop<tty::Pty, EventProxy>, State)>>,
+    /// Processus lance dans le PTY, pour l'arreter de force a la fermeture.
+    child: Child,
     size: TermSize,
     cell: (u16, u16),
     palette: TerminalPalette,
@@ -216,6 +223,9 @@ impl TerminalSession {
             cell_height: cell.1.max(1),
         };
         let pty = tty::new(&options, window_size, 0)?;
+        // Pris avant que la boucle n'emporte le PTY: le processus est alors
+        // vivant et pas encore recolte, son numero ne designe que lui.
+        let child = Child::new(pty.child().id());
 
         let (sender, events) = mpsc::channel();
         let proxy = EventProxy {
@@ -240,6 +250,7 @@ impl TerminalSession {
             sender,
             events,
             loop_handle: Some(loop_handle),
+            child,
             size,
             cell: (window_size.cell_width, window_size.cell_height),
             palette: TerminalPalette::default(),
@@ -487,13 +498,114 @@ impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = self.sender.send(Msg::Shutdown);
         if let Some(handle) = self.loop_handle.take() {
-            // La boucle libere le PTY, qui envoie SIGHUP au processus fils.
-            let _ = handle.join();
+            release_pty(handle, &self.child);
         }
         for path in &self.cleanup {
             let _ = std::fs::remove_file(path);
         }
     }
+}
+
+/// Arrete la boucle d'une session et attend la fin de son processus, sans
+/// jamais suspendre l'appelant — le fil de l'interface — plus de quelques
+/// instants.
+///
+/// La boucle rendue par `join` libere le PTY en tombant: `alacritty_terminal`
+/// envoie alors SIGHUP au processus, puis **attend sa fin** avant de refermer
+/// le PTY. Un shell qui ignore SIGHUP — `trap '' HUP`, `exec nohup ...` — ne
+/// finit jamais: faite ici, cette attente figeait toute l'application. Elle
+/// part donc dans un fil a elle, et le processus encore present au bout de
+/// `HANGUP_GRACE` est tue.
+///
+/// Ce qui a ete lance depuis la session et ignore SIGHUP survit, comme apres
+/// `nohup` — y compris ce qui herite d'un `trap '' HUP`. C'est le comportement
+/// de tout terminal.
+fn release_pty(handle: JoinHandle<(EventLoop<tty::Pty, EventProxy>, State)>, child: &Child) {
+    let (done, finished) = mpsc::channel();
+    // Si le fil ne peut pas etre cree, la poignee est lachee avec lui: le fil
+    // de la boucle libere alors le PTY lui-meme, toujours hors de l'interface,
+    // et le canal ferme rend la main aussitot.
+    let _ = std::thread::Builder::new()
+        .name("fermeture-pty".into())
+        .spawn(move || {
+            drop(handle.join());
+            let _ = done.send(());
+        });
+    if let Err(RecvTimeoutError::Timeout) = finished.recv_timeout(HANGUP_GRACE) {
+        log::warn!(
+            "le processus {} ignore SIGHUP: arret force de la session",
+            child.pid
+        );
+        child.kill();
+        // SIGKILL ne s'ignore pas. Ce second delai ne couvre qu'un processus
+        // coince dans le noyau, que rien ne peut tuer: il est laisse au fil de
+        // fermeture plutot que de geler l'interface.
+        let _ = finished.recv_timeout(HANGUP_GRACE);
+    }
+}
+
+/// Processus lance dans le PTY: le shell local, ou `ssh`.
+///
+/// Sous Linux, il est tenu par un pidfd: un signal envoye par ce descripteur
+/// atteint ce processus-la et aucun autre, meme s'il vient d'etre recolte et
+/// que son numero a ete reattribue entre-temps. Sans pidfd (noyau anterieur a
+/// 5.3), le numero de processus sert de repli.
+struct Child {
+    pid: libc::pid_t,
+    #[cfg(target_os = "linux")]
+    pidfd: Option<std::os::fd::OwnedFd>,
+}
+
+impl Child {
+    fn new(pid: u32) -> Self {
+        let pid = pid as libc::pid_t;
+        Self {
+            pid,
+            #[cfg(target_os = "linux")]
+            pidfd: open_pidfd(pid),
+        }
+    }
+
+    /// Tue le processus (SIGKILL), sans attendre.
+    fn kill(&self) {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            if let Some(pidfd) = &self.pidfd {
+                // SAFETY: le descripteur vit aussi longtemps que `self`; le
+                // seul pointeur passe au noyau est le `siginfo` nul, que
+                // `pidfd_send_signal(2)` accepte.
+                unsafe {
+                    libc::syscall(
+                        libc::SYS_pidfd_send_signal,
+                        pidfd.as_raw_fd(),
+                        libc::SIGKILL,
+                        std::ptr::null::<libc::siginfo_t>(),
+                        0,
+                    );
+                }
+                return;
+            }
+        }
+        // SAFETY: `kill(2)` ne lit ni n'ecrit la memoire de l'appelant.
+        unsafe {
+            libc::kill(self.pid, libc::SIGKILL);
+        }
+    }
+}
+
+/// Ouvre un pidfd sur `pid`, ou `None` si le noyau ne sait pas faire.
+#[cfg(target_os = "linux")]
+fn open_pidfd(pid: libc::pid_t) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::{FromRawFd, RawFd};
+    // SAFETY: appel systeme sans pointeur. Le descripteur rendu porte
+    // O_CLOEXEC d'office: les sessions suivantes n'en heritent pas.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: descripteur tout juste ouvert, que personne d'autre ne possede.
+    Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as RawFd) })
 }
 
 #[cfg(test)]
@@ -545,6 +657,89 @@ mod tests {
         let policy = ClipboardPolicy::from_config(&security);
         assert!(policy.allow_remote_read);
         assert_eq!(policy.max_write_bytes, 42);
+    }
+
+    /// Lance `sh -c script` dans une session; `marker` permet de retrouver le
+    /// shell dans `/proc` sans dependre de l'implementation de la fermeture.
+    fn shell_session(script: &str, marker: &str) -> TerminalSession {
+        let spec = CommandSpec {
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), format!("{script} # {marker}")],
+            env: std::collections::HashMap::new(),
+            working_directory: None,
+        };
+        TerminalSession::spawn(
+            &spec,
+            TermSize::new(80, 24),
+            (8, 16),
+            100,
+            &egui::Context::default(),
+            Vec::new(),
+            ClipboardPolicy::default(),
+        )
+        .expect("session terminal")
+    }
+
+    /// Un processus portant `marker` dans sa ligne de commande tourne-t-il?
+    fn running(marker: &str) -> bool {
+        std::fs::read_dir("/proc")
+            .expect("/proc")
+            .filter_map(Result::ok)
+            .filter_map(|entry| std::fs::read(entry.path().join("cmdline")).ok())
+            .any(|cmdline| String::from_utf8_lossy(&cmdline).contains(marker))
+    }
+
+    /// Ferme la session dans un fil a part et renvoie la duree de fermeture,
+    /// ou `None` si elle n'a pas abouti dans le delai: un test qui reproduit un
+    /// blocage ne doit pas bloquer a son tour.
+    fn close_within(session: TerminalSession, limit: Duration) -> Option<Duration> {
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || {
+            let start = Instant::now();
+            drop(session);
+            let _ = done.send(start.elapsed());
+        });
+        finished.recv_timeout(limit).ok()
+    }
+
+    /// Attend qu'un processus disparaisse, le temps que le systeme le recolte.
+    fn gone(marker: &str) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while running(marker) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        !running(marker)
+    }
+
+    #[test]
+    fn closing_a_session_ends_its_shell_promptly() {
+        let marker = format!("sshpass-test-{}", uuid::Uuid::new_v4());
+        let session = shell_session("while :; do sleep 1; done", &marker);
+        assert!(running(&marker), "le shell n'a pas demarre");
+
+        let took = close_within(session, Duration::from_secs(10)).expect("fermeture bloquee");
+        assert!(took < HANGUP_GRACE, "fermeture trop lente: {took:?}");
+        assert!(gone(&marker), "le shell survit a la fermeture");
+    }
+
+    #[test]
+    fn a_shell_deaf_to_sighup_does_not_freeze_the_closing() {
+        // `trap '' HUP`: le shell ignore le signal de fermeture. Liberer le PTY
+        // attendait sa fin, dans le fil de l'interface: l'application gelait.
+        let marker = format!("sshpass-test-{}", uuid::Uuid::new_v4());
+        let session = shell_session("trap '' HUP; while :; do sleep 1; done", &marker);
+        assert!(running(&marker), "le shell n'a pas demarre");
+
+        let took = close_within(session, Duration::from_secs(10));
+        if took.is_none() {
+            // Nettoyage avant d'echouer: ne pas laisser le shell derriere soi.
+            let _ = std::process::Command::new("pkill")
+                .args(["-KILL", "-f", &marker])
+                .status();
+        }
+        let took = took.expect("la fermeture gele sur un shell qui ignore SIGHUP");
+        assert!(took < HANGUP_GRACE * 3, "fermeture trop lente: {took:?}");
+        assert!(gone(&marker), "le shell survit a la fermeture");
     }
 
     #[test]

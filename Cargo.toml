@@ -43,6 +43,12 @@ thiserror = "2"
 log = "0.4"
 env_logger = "0.11"
 
+# Appels systeme sans equivalent dans la bibliotheque standard: forcer l'arret
+# d'un processus de terminal qui ignore SIGHUP (pidfd, SIGKILL — cf.
+# `term::release_pty`), lire l'identifiant du compte. Deja tiree par
+# `alacritty_terminal`: aucune caisse nouvelle.
+libc = "0.2"
+
 # ---------------------------------------------------------------------------
 # Paquet Debian/Ubuntu — `cargo deb`
 #

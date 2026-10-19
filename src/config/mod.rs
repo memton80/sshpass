@@ -646,27 +646,23 @@ pub fn secure_runtime_dir(allow_temp_fallback: bool) -> std::io::Result<PathBuf>
             ),
         ));
     }
-    if let Some(uid) = current_uid() {
-        if meta.uid() != uid {
-            return Err(Error::new(
-                ErrorKind::PermissionDenied,
-                format!("{} appartient a un autre compte", dir.display()),
-            ));
-        }
+    if meta.uid() != current_uid() {
+        return Err(Error::new(
+            ErrorKind::PermissionDenied,
+            format!("{} appartient a un autre compte", dir.display()),
+        ));
     }
     Ok(dir)
 }
 
 /// Identifiant du compte qui execute ce processus.
 ///
-/// Lu sur `/proc/self` plutot que par `getuid(2)`: la caisse n'a pas de
-/// dependance a `libc`, et ce projet ne vise que Linux. La ou `/proc` n'est
-/// pas monte, on renvoie `None` et l'appelant se contente du controle des
-/// droits — qui suffit deja a rendre le repertoire inutilisable par un tiers.
+/// Par `getuid(2)` plutot qu'en lisant `/proc/self`: le controle tient aussi
+/// la ou `/proc` n'est pas monte.
 #[cfg(unix)]
-fn current_uid() -> Option<u32> {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata("/proc/self").ok().map(|m| m.uid())
+fn current_uid() -> u32 {
+    // SAFETY: `getuid(2)` n'echoue jamais et ne touche a aucune memoire.
+    unsafe { libc::getuid() }
 }
 
 /// Verrou des tests qui touchent aux variables d'environnement.
